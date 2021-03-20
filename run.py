@@ -503,8 +503,10 @@ def start_run(mode, net, dataloader, amp, epochs, device, loss_fun, loss_fun_mae
         net.eval()
         if mode == 'valid':
             loss_path = mypath.valid_loss
-        else:
+        elif mode == 'test':
             loss_path = mypath.test_loss
+        else:
+            raise Exception('mode is wrong', mode)
 
     batch_idx = 0
     total_loss = 0
@@ -515,27 +517,38 @@ def start_run(mode, net, dataloader, amp, epochs, device, loss_fun, loss_fun_mae
         batch_y = batch_y.to(device)
         if amp:
             with torch.cuda.amp.autocast():
-                pred = net(batch_x)
+                if mode != 'train':
+                    with torch.no_grad:
+                        pred = net(batch_x)
+                else:
+                    pred = net(batch_x)
+
                 loss = loss_fun(pred, batch_y)
                 loss_mae = loss_fun_mae(pred, batch_y)
                 pred_end5 = round_to_5(pred, device)
                 loss_mae_end5 = loss_fun_mae(pred_end5, batch_y)
-
-            opt.zero_grad()
-            scaler.scale(loss).backward()
-            scaler.step(opt)
-            scaler.update()
+            if mode == 'train':  # update gradients only when training
+                opt.zero_grad()
+                scaler.scale(loss).backward()
+                scaler.step(opt)
+                scaler.update()
 
         else:
-            pred = net(batch_x)
+            if mode != 'train':
+                with torch.no_grad:
+                    pred = net(batch_x)
+            else:
+                pred = net(batch_x)
+
             loss = loss_fun(pred, batch_y)
             loss_mae = loss_fun_mae(pred, batch_y)
             pred_end5 = round_to_5(pred, device)
             loss_mae_end5 = loss_fun_mae(pred_end5, batch_y)
 
-            opt.zero_grad()
-            loss.backward()
-            opt.step()
+            if mode == 'train':  # update gradients only when training
+                opt.zero_grad()
+                loss.backward()
+                opt.step()
 
         print(loss.item())
 
