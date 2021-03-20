@@ -518,7 +518,7 @@ def start_run(mode, net, dataloader, amp, epochs, device, loss_fun, loss_fun_mae
         if amp:
             with torch.cuda.amp.autocast():
                 if mode != 'train':
-                    with torch.no_grad:
+                    with torch.no_grad():
                         pred = net(batch_x)
                 else:
                     pred = net(batch_x)
@@ -535,7 +535,7 @@ def start_run(mode, net, dataloader, amp, epochs, device, loss_fun, loss_fun_mae
 
         else:
             if mode != 'train':
-                with torch.no_grad:
+                with torch.no_grad():
                     pred = net(batch_x)
             else:
                 pred = net(batch_x)
