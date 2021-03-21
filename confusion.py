@@ -15,7 +15,11 @@ def confusion(label_file, pred_file):
     print("Start the save of confsion matrix plot and csv for: ")
     print(label_file)
     print(pred_file)
-    columns = ['disext', 'gg', 'rept']
+    df_label = pd.read_csv(label_file)
+    if len(df_label.columns.names)==1:
+        columns = ['unknown']
+    else:
+        columns = ['disext', 'gg', 'rept']
     df_label = pd.read_csv(label_file, names=columns)
     df_pred = pd.read_csv(pred_file, names=columns)
     for column in columns:
@@ -37,11 +41,40 @@ def confusion(label_file, pred_file):
             for u, c in zip(unique, counts):
                 df.at[idx, u] = c
 
+        def mae(df, axis=None, keepdims=True):
+            # arr = df.to_numpy()
+            # labels = df.index.to_numpy().astype(int)
+            preds =  df.columns.to_numpy().astype(int)
+            mae_ls = []
+            total_ls = []
+            for label, row  in df.iterrows():
+                row = row.to_numpy()
+                abs_err = np.abs(preds - label)
+                weighted_err = abs_err * row
+                weighted_err = np.sum(weighted_err)
+                weighted_err = weighted_err / np.sum(row)
+                mae_ls.append(weighted_err)
+                total_ls.append(np.sum(row))
+            # mae_np = np.mean(, axis=axis, keepdims=keepdims)
+            mae_np = np.array(mae_ls)
+            total_np = np.array(total_ls)
+            return mae_np, total_np
+
+        mae_np, total_np = mae(df)
+
+        df.loc[:, 'Total'] = total_np
+
+        diag_np = np.diag(df)
+        acc_np = diag_np / total_np
+        df.loc[:, 'Acc'] = acc_np
+        df.loc[:, 'MAE'] = mae_np
+        df.replace(0, np.nan, inplace=True)
+
         basename = os.path.dirname(pred_file)
         prefix = pred_file.split("/")[-1].split("_")[0]
 
-        fig = plt.figure(figsize=(7,5.5))
-        ax = sns.heatmap(df, annot=True, cmap="YlGnBu", fmt='d')  #, cbar=False
+        fig = plt.figure(figsize=(8,5.5))
+        ax = sns.heatmap(df, annot=True, cmap="YlGnBu", fmt='.2f', cbar_kws={"orientation": "horizontal"})  #, cbar=False
 
         for i in range(len(index_label)):
             ax.add_patch(Rectangle((i+1, i+1), 1, 1, fill=False, edgecolor='blue', ls=':', lw=0.5))

@@ -42,8 +42,11 @@ def get_net(name, nb_cls):
     elif name == 'vgg19':
         if args.pretrained:
             net = models.vgg19(pretrained=True, progress=True)
-            net2 = models.vgg19(pretrained=False, progress=True, num_classes=3)
-            net.classifier = net2.classifier
+            if args.vgg_init == "jjia":
+                net2 = models.vgg19(pretrained=False, progress=True, num_classes=3)
+                net.classifier = net2.classifier
+            elif args.vgg_init == "lishin":
+                net.classifier[6] = torch.nn.Linear(in_features=4096, out_features=3, bias=True)
         else:
             net = models.vgg19(pretrained=args.pretrained, progress=True, num_classes=nb_cls)
         net.features[0] = nn.Conv2d(1, 64, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))  # change in_features to 1
@@ -447,6 +450,8 @@ def record_GPU_info():
 def appendrows_to(fpath, data):
     with open(fpath, 'a') as csv_file:
         writer = csv.writer(csv_file, delimiter=',')
+        if len(data.shape)==1:  # when data.shape==(batch_size,) in classification task
+            data = data.reshape(-1, 1)
         writer.writerows(data)
 
 
@@ -515,6 +520,9 @@ def start_run(mode, net, dataloader, amp, epochs, device, loss_fun, loss_fun_mae
     for batch_x, batch_y in dataloader:
         batch_x = batch_x.to(device)
         batch_y = batch_y.to(device)
+        if args.r_c == "c":
+            batch_y = batch_y.type(torch.LongTensor)  # crossentropy requires LongTensor
+            batch_y = batch_y.to(device)
         if amp:
             with torch.cuda.amp.autocast():
                 if mode != 'train':
@@ -524,6 +532,15 @@ def start_run(mode, net, dataloader, amp, epochs, device, loss_fun, loss_fun_mae
                     pred = net(batch_x)
 
                 loss = loss_fun(pred, batch_y)
+
+                if args.r_c == "c":
+                    pred = torch.argmax(pred, dim=1)
+                    pred = pred.type(torch.FloatTensor)
+                    pred = pred.to(device)
+                    pred = pred * 5  # convert back to original scores
+                    batch_y = batch_y * 5  # convert back to original scores
+                    # pred = pred.type(torch.LongTensor)
+
                 loss_mae = loss_fun_mae(pred, batch_y)
                 pred_end5 = round_to_5(pred, device)
                 loss_mae_end5 = loss_fun_mae(pred_end5, batch_y)
@@ -541,6 +558,14 @@ def start_run(mode, net, dataloader, amp, epochs, device, loss_fun, loss_fun_mae
                 pred = net(batch_x)
 
             loss = loss_fun(pred, batch_y)
+
+            if args.r_c == "c":
+                pred = torch.argmax(pred, dim=1)
+                pred = pred.type(torch.FloatTensor)
+                pred = pred.to(device)
+                pred = pred * 5  # convert back to original scores
+                batch_y = batch_y * 5  # convert back to original scores
+
             loss_mae = loss_fun_mae(pred, batch_y)
             pred_end5 = round_to_5(pred, device)
             loss_mae_end5 = loss_fun_mae(pred_end5, batch_y)
@@ -576,7 +601,7 @@ def start_run(mode, net, dataloader, amp, epochs, device, loss_fun, loss_fun_mae
         writer = csv.writer(csv_file, delimiter=',')
         writer.writerow([epoch_idx, ave_loss, ave_loss_mae, ave_loss_mae_end5])
 
-    if args.mode == 'train' and valid_mae_best:
+    if args.mode == 'train' and valid_mae_best is not None:
         if loss_mae < valid_mae_best:
             valid_mae_best = ave_loss_mae
             print('this model is the best one, save it. epoch id: ', epoch_idx)
@@ -586,6 +611,11 @@ def start_run(mode, net, dataloader, amp, epochs, device, loss_fun, loss_fun_mae
     else:
         return None
 
+
+def get_column(n, tr_y):
+    column = [i[n] for i in tr_y]
+    column = [j/5 for j in column]  # convert labels from [0,5,10, ..., 100] to [0, 1, 2, ..., 20]
+    return column
 
 def prepare_data():
     # get data_x names
@@ -630,17 +660,29 @@ def train(id):
         device = "cpu"
         amp = False
     log_dict['amp'] = amp
-
-    net = get_net(args.net, 3)
-
+    if args.r_c == "r":  # regression target will predict 3 labels at the same time.
+        net = get_net(args.net, 3)
+    else:
+        net = get_net(args.net, 21)  # classification can only predict 21 classes of one label
     transform = get_transform()
-
     tr_x, tr_y, vd_x, vd_y, ts_x, ts_y = prepare_data()
+    if args.r_c == "c":  # classification target
+        if args.cls == "disext":
+            tr_y, vd_y, ts_y = get_column(0, tr_y), get_column(0, vd_y), get_column(0, ts_y)
+        elif args.cls == "gg":
+            tr_y, vd_y, ts_y = get_column(1, tr_y), get_column(1, vd_y), get_column(1, ts_y)
+        elif args.cls == "rept":
+            tr_y, vd_y, ts_y = get_column(2, tr_y), get_column(2, vd_y), get_column(2, ts_y)
+        else:
+            raise Exception("Wrong args.cls: ", args.cls)
 
     if args.sampler:
         disext_list = []
         for sample in tr_y:
-            disext_list.append(sample[0])
+            if type(sample) is list:
+                disext_list.append(sample[0])
+            else:
+                disext_list.append(sample)
         disext_np = np.array(disext_list)
         disext_unique = np.unique(disext_np)
         class_sample_count = np.array([len(np.where(disext_np == t)[0]) for t in disext_unique])
@@ -669,8 +711,12 @@ def train(id):
     test_dataloader = DataLoader(ts_dataset, batch_size=batch_size, shuffle=False, num_workers=workers)
 
     net = net.to(device)
-    loss_fun = nn.MSELoss()
-    log_dict['loss_fun'] = 'MSE'
+    if args.r_c == "c":
+        loss_fun = nn.CrossEntropyLoss()  # for classification task
+        log_dict['loss_fun'] = 'CE'
+    else:
+        loss_fun = nn.MSELoss()  # for regression task
+        log_dict['loss_fun'] = 'MSE'
     loss_fun_mae = nn.L1Loss()
 
     lr = 1e-4
