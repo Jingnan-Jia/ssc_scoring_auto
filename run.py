@@ -28,7 +28,7 @@ from torch.utils.data import WeightedRandomSampler
 from torchvision import transforms
 from torchvision.transforms import Resize, RandomRotation, RandomHorizontalFlip, RandomVerticalFlip
 from varname import nameof
-
+import confusion
 from set_args import args
 
 log_dict = {}  # a global dict to store variables saved to log files
@@ -579,7 +579,7 @@ def start_run(mode, net, dataloader, amp, epochs, device, loss_fun, loss_fun_mae
     if args.mode == 'train' and valid_mae_best:
         if loss_mae < valid_mae_best:
             valid_mae_best = ave_loss_mae
-            print('this model is the best one, save it.')
+            print('this model is the best one, save it. epoch id: ', epoch_idx)
             torch.save(net.state_dict(), mypath.model_fpath)
             print('save_successfully at ', mypath.model_fpath)
         return valid_mae_best
@@ -661,7 +661,7 @@ def train(id):
 
     batch_size = 10
     log_dict['batch_size'] = batch_size
-    workers = 18
+    workers = 14
     log_dict['loader_workers'] = workers
     train_dataloader = DataLoader(tr_dataset, batch_size=batch_size, shuffle=False, num_workers=workers,
                                   sampler=sampler)
@@ -700,6 +700,11 @@ def train(id):
         # if i == epochs - 1:
         start_run('test', net, test_dataloader, amp, epochs, device, loss_fun, loss_fun_mae, opt, scaler, mypath, i)
 
+    confusion.confusion(mypath.train_batch_label, mypath.train_batch_preds_end5)
+    confusion.confusion(mypath.valid_batch_label, mypath.valid_batch_preds_end5)
+    confusion.confusion(mypath.test_batch_label, mypath.test_batch_preds_end5)
+
+
 
 def record_preds(mode, batch_y, pred, mypath):
     batch_label = batch_y.cpu().detach().numpy().astype('Int64')
@@ -717,11 +722,13 @@ def record_preds(mode, batch_y, pred, mypath):
         appendrows_to(mypath.valid_batch_preds, batch_preds)
         appendrows_to(mypath.valid_batch_preds_int, batch_preds_int)
         appendrows_to(mypath.valid_batch_preds_end5, batch_preds_end5)
+
     elif mode == 'test':
         appendrows_to(mypath.test_batch_label, batch_label)
         appendrows_to(mypath.test_batch_preds, batch_preds)
         appendrows_to(mypath.test_batch_preds_int, batch_preds_int)
         appendrows_to(mypath.test_batch_preds_end5, batch_preds_end5)
+
 
 
 def record_experiment(record_file, id=None):
