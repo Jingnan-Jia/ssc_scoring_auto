@@ -40,22 +40,24 @@ def get_net(name, nb_cls):
             if args.pretrained:
                 net = models.vgg11_bn(pretrained=True, progress=True)
 
-                # net.classifier[3] = torch.nn.Linear(in_features=4096, out_features=args.fc2_nodes),
-                net.classifier[6] = torch.nn.Linear(in_features=args.fc2_nodes, out_features=3, bias=True)
+                net.classifier[3] = torch.nn.Linear(in_features=4096, out_features=args.fc2_nodes)
+                net.classifier[6] = torch.nn.Linear(in_features=args.fc2_nodes, out_features=3)
             else:
                 net = models.vgg11_bn(pretrained=args.pretrained, progress=True, num_classes=nb_cls)
+                net.classifier[3] = torch.nn.Linear(in_features=4096, out_features=args.fc2_nodes)
+                net.classifier[6] = torch.nn.Linear(in_features=args.fc2_nodes, out_features=3)
         elif name == 'vgg16':
             if args.pretrained:
                 net = models.vgg16(pretrained=True, progress=True)
-                # net.classifier[3] = torch.nn.Linear(4096, args.fc2_nodes),
-                net.classifier[6] = torch.nn.Linear(in_features=args.fc2_nodes, out_features=3, bias=True)
+                net.classifier[3] = torch.nn.Linear(4096, args.fc2_nodes)
+                net.classifier[6] = torch.nn.Linear(in_features=args.fc2_nodes, out_features=3)
             else:
                 net = models.vgg16(pretrained=args.pretrained, progress=True, num_classes=nb_cls)
         elif name == 'vgg19':
             if args.pretrained:
                 net = models.vgg19(pretrained=True, progress=True)
                 # net.classifier[3] = torch.nn.Linear(4096, args.fc2_nodes),
-                net.classifier[6] = torch.nn.Linear(in_features=args.fc2_nodes, out_features=3, bias=True)
+                net.classifier[6] = torch.nn.Linear(in_features=args.fc2_nodes, out_features=3)
             else:
                 net = models.vgg19(pretrained=args.pretrained, progress=True, num_classes=nb_cls)
         else:
@@ -695,8 +697,9 @@ def split_ts_data_by_levels(data_dir, label_file):
         test_count = {0: 56, 5: 12, 10: 9, 15: 6, 20: 6, 25: 6, 30: 6, 35: 4, 40: 5, 45: 3, 50: 4, 55: 3, 60: 3, 65: 2,
                       70: 2, 75: 1, 80: 2, 85: 1, 90: 2, 95: 0, 100: 2}
     elif args.ts_level_nb == 235:
-        test_count = {0: 115, 5: 24, 10: 18, 15: 9, 20: 12, 25: 9, 30: 9, 35: 6, 40: 8, 45: 3, 50: 7, 55: 3, 60: 3,
+        test_count = {0: 114, 5: 24, 10: 18, 15: 9, 20: 12, 25: 9, 30: 9, 35: 6, 40: 8, 45: 3, 50: 7, 55: 3, 60: 3,
                       65: 2, 70: 2, 75: 1, 80: 1, 85: 1, 90: 2, 95: 0, 100: 1}
+    assert args.ts_level_nb == sum(test_count.values())
 
     tr_vd_x, tr_vd_y, test_x, test_y = [], [], [], []
     for x, y in zip(level_x, level_y):
@@ -739,7 +742,7 @@ def prepare_data():
 
     tr_vd_level_names, tr_vd_level_y, test_level_names, test_level_y = split_ts_data_by_levels(data_dir, label_file)
 
-    kf5 = KFold(n_splits=5, shuffle=True, random_state=42)  # for future reproduction
+    kf5 = KFold(n_splits=args.total_folds, shuffle=True, random_state=42)  # for future reproduction
     log_dict['data_shuffle'] = True
     log_dict['data_shuffle_seed'] = 42
     kf_list = list(kf5.split(tr_vd_level_names))
