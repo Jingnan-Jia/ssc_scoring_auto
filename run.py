@@ -26,7 +26,7 @@ from sklearn.model_selection import KFold
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.data import WeightedRandomSampler
 from torchvision import transforms
-from torchvision.transforms import Resize, RandomRotation, RandomHorizontalFlip, RandomVerticalFlip
+from torchvision.transforms import Resize, RandomRotation, RandomHorizontalFlip, RandomVerticalFlip, functional,CenterCrop
 from varname import nameof
 import confusion
 from set_args import args
@@ -35,20 +35,31 @@ log_dict = {}  # a global dict to store variables saved to log files
 
 
 def get_net(name, nb_cls):
+    if 'vgg' in name:
+        if name == 'vgg11_bn':
+            if args.pretrained:
+                net = models.vgg11_bn(pretrained=True, progress=True)
 
-    if name == 'vgg16':
-        net = models.vgg16(pretrained=False, progress=True, num_classes=nb_cls)
-        net.features[0] = nn.Conv2d(1, 64, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))  # change in_features to 1
-    elif name == 'vgg19':
-        if args.pretrained:
-            net = models.vgg19(pretrained=True, progress=True)
-            if args.vgg_init == "jjia":
-                net2 = models.vgg19(pretrained=False, progress=True, num_classes=3)
-                net.classifier = net2.classifier
-            elif args.vgg_init == "lishin":
-                net.classifier[6] = torch.nn.Linear(in_features=4096, out_features=3, bias=True)
+                # net.classifier[3] = torch.nn.Linear(in_features=4096, out_features=args.fc2_nodes),
+                net.classifier[6] = torch.nn.Linear(in_features=args.fc2_nodes, out_features=3, bias=True)
+            else:
+                net = models.vgg11_bn(pretrained=args.pretrained, progress=True, num_classes=nb_cls)
+        elif name == 'vgg16':
+            if args.pretrained:
+                net = models.vgg16(pretrained=True, progress=True)
+                # net.classifier[3] = torch.nn.Linear(4096, args.fc2_nodes),
+                net.classifier[6] = torch.nn.Linear(in_features=args.fc2_nodes, out_features=3, bias=True)
+            else:
+                net = models.vgg16(pretrained=args.pretrained, progress=True, num_classes=nb_cls)
+        elif name == 'vgg19':
+            if args.pretrained:
+                net = models.vgg19(pretrained=True, progress=True)
+                # net.classifier[3] = torch.nn.Linear(4096, args.fc2_nodes),
+                net.classifier[6] = torch.nn.Linear(in_features=args.fc2_nodes, out_features=3, bias=True)
+            else:
+                net = models.vgg19(pretrained=args.pretrained, progress=True, num_classes=nb_cls)
         else:
-            net = models.vgg19(pretrained=args.pretrained, progress=True, num_classes=nb_cls)
+            raise Exception("Wrong vgg net name specified ", name)
         net.features[0] = nn.Conv2d(1, 64, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))  # change in_features to 1
     elif name == 'resnet18':
         net = models.resnet18()
@@ -115,7 +126,7 @@ def save_itk(filename, scan, origin, spacing, dtype='int16'):
     writer.Execute(stk, filename, True)
 
 
-def load_level_data(data_dir: str, label_file: str, level: int) -> Tuple[List, List]:
+def load_level_data_old(data_dir: str, label_file: str, level: int) -> Tuple[List, List]:
     """
     Load the data for the specific level.
     :param label_file:
@@ -159,6 +170,40 @@ def load_level_data(data_dir: str, label_file: str, level: int) -> Tuple[List, L
     return x, y
 
 
+def load_level_names_from_dir(data_dir: str, label_file: str, levels: Union[int, List[int]]) -> Tuple[List, List]:
+    """
+    Load the data for the specific level.
+    :param label_file:
+    :param data_dir:
+    :param level:
+    :return:
+    """
+    if type(levels) is list:
+        x_list, y_list = [], []
+        for level in levels:
+            file_prefix = "Level" + str(level)
+            x_middle = sorted(glob.glob(os.path.join(data_dir, "*", file_prefix + "_middle*")))
+            label_excel = pd.read_excel(label_file, engine='openpyxl')
+
+            # 3 labels for one level
+            y_disext = pd.DataFrame(label_excel, columns=['L' + str(level) + '_disext']).values
+            y_gg = pd.DataFrame(label_excel, columns=['L' + str(level) + '_gg']).values
+            y_retp = pd.DataFrame(label_excel, columns=['L' + str(level) + '_retp']).values
+
+            y_disext = np.array(y_disext).reshape((-1,))
+            y_gg = np.array(y_gg).reshape((-1,))
+            y_retp = np.array(y_retp).reshape((-1,))
+
+            y = [np.array([a, b, c]) for a, b, c in zip(y_disext, y_gg, y_retp)]
+
+            x_list.extend(x_middle)
+            y_list.extend(y)
+
+    assert len(x_list) == len(y_list)
+
+    return x_list, y_list
+
+
 def load_data_of_pats(dir_pats: List, label_file: str):
     df_excel = pd.read_excel(label_file, engine='openpyxl')
     df_excel = df_excel.set_index('PatID')
@@ -169,6 +214,23 @@ def load_data_of_pats(dir_pats: List, label_file: str):
         x.extend(x_pat)
         y.extend(y_pat)
     return x, y
+
+
+def load_data_of_levels(level_names: List, y):
+    level_middle = level_names
+    level_all_names, level_all_y = [], []
+    for level_m, y_ in zip(level_middle, y):
+        level_idx = level_m.split('Level')[-1].split("_")[
+            0]  # /data/jjia/ssc_scoring/dataset/SSc_DeepLearning/Pat_010/Level1_up.mha
+
+        level_u = sorted(glob.glob(os.path.join(os.path.dirname(level_m), "Level" + level_idx + "_up*")))[0]
+        # level_m = sorted(glob.glob(os.path.join(os.path.dirname(level_m), "Level" + level_idx + "_up*")))
+        level_d = sorted(glob.glob(os.path.join(os.path.dirname(level_m), "Level" + level_idx + "_down*")))[0]
+
+        level_all_names.extend([level_u, level_m, level_d])
+        level_all_y.extend([y_, y_, y_])
+
+    return level_all_names, level_all_y
 
 
 def load_data_of_5_levels(dir_pat: str, df_excel: pd.DataFrame) -> Tuple[List, List]:
@@ -255,42 +317,6 @@ def load_data_of_a_level(dir_pat: str, df_excel: pd.DataFrame, level: int) -> Tu
     return x, y
 
 
-def load_data_from_dir(data_dir: str, label_file: str) -> Tuple[List, List]:
-    """
-    The structure of data should be
-    - data_dir
-      - case1
-        - level1_up.mha
-        - level1_middle.mha
-        - level1_down.mha
-        - level2_up.mha
-        ...
-        - level5_down.mha
-      - case2
-        ...
-      ...
-      label_file # an excel file
-    :param label_file:
-    :param data_dir:
-    :return:
-    """
-    abs_dir_path = os.path.dirname(os.path.realpath(__file__))  # abosolute path of the current .py file
-    data_dir = abs_dir_path + "/" + data_dir
-    if args.level == 0:
-        level1_x, level1_y = load_level_data(data_dir, label_file, level=1)
-        level2_x, level2_y = load_level_data(data_dir, label_file, level=2)
-        level3_x, level3_y = load_level_data(data_dir, label_file, level=3)
-        level4_x, level4_y = load_level_data(data_dir, label_file, level=4)
-        level5_x, level5_y = load_level_data(data_dir, label_file, level=5)
-
-        level_x = list(itertools.chain(level1_x, level2_x, level3_x, level4_x, level5_x))
-        level_y = list(itertools.chain(level1_y, level2_y, level3_y, level4_y, level5_y))
-    else:
-        level_x, level_y = load_level_data(data_dir, label_file, level=args.level)
-
-    return level_x, level_y
-
-
 def normalize(image):
     # normalize the image
     mean, std = np.mean(image), np.std(image)
@@ -310,30 +336,69 @@ class SScScoreDataset(Dataset):
             self.data_x_names = self.data_x_names[index]
             self.data_y_list = self.data_y_list[index]
         print('loading data ...')
-        self.data_x_np = [load_itk(x) for x in self.data_x_names]
+        self.data_x = [load_itk(x, require_sp_po=True) for x in self.data_x_names]
+        self.data_x_np = [i[0] for i in self.data_x]
+        self.data_x_or_sp = [[i[1], i[2]] for i in self.data_x]
+
         self.data_x_np = [normalize(x) for x in self.data_x_np]
+
         log_dict['normalize_data'] = True
 
         self.data_x_np = [x.astype(np.float32) for x in self.data_x_np]
         self.data_y_np = [y.astype(np.float32) for y in self.data_y_list]
-        self.data_x = [torch.as_tensor(x) for x in self.data_x_np]
-        self.data_y = [torch.as_tensor(y) for y in self.data_y_np]
+        self.min = [np.min(x) for x in self.data_x_np]
+        self.data_x_np = [np.pad(x, pad_width=((128, 128), (128, 128)), mode='constant', constant_values=(m,)) for x,m in zip(self.data_x_np, self.min)]
+        self.data_x_tensor = [torch.as_tensor(x) for x in self.data_x_np]
+        self.data_y_tensor = [torch.as_tensor(y) for y in self.data_y_np]
+
+        # self.min_value = [torch.min(x).item() for x in self.data_x_tensor]  # min values after normalization
+        # self.data_x_tensor = [functional.pad(x, padding=[128, 128], fill=min) for x, min in zip(self.data_x_tensor, self.min_value)]
+
         self.transform = transform
 
     def __len__(self):
-        return len(self.data_y)
+        return len(self.data_y_tensor)
 
     def __getitem__(self, idx):
         if torch.is_tensor(idx):
             idx = idx.tolist()
 
-        image = self.data_x[idx]
-        label = self.data_y[idx]
+        image = self.data_x_tensor[idx]
+        image_name = self.data_x_names[idx]
+        image_origin, image_spacing = self.data_x_or_sp[idx]
+        # image_info = {'name':image_name, 'origin':image_origin, 'spacing':image_spacing}
+        label = self.data_y_tensor[idx]
+
+        # if type(image_info['origin']) is torch.Tensor:
+        #     image_info['origin'] = image_info['origin'].numpy()
+        # if type(image_info['spacing']) is torch.Tensor:
+        #     image_info['spacing'] = image_info['spacing'].numpy()
+
+        # ori = list(image_info['origin'][0])
+        image_origin = np.append(image_origin, 1)
+        # sp = list(image_info['spacing'][0])
+        image_spacing = np.append(image_spacing, 1)
+        print(image_name)
+
+        def crop_center(img, cropx, cropy):
+            y, x = img.shape
+            startx = x // 2 - (cropx // 2)
+            starty = y // 2 - (cropy // 2)
+            return img[starty:starty + cropy, startx:startx + cropx]
+        img_before_aug = crop_center(image.numpy(), 512, 512)
+        save_itk('aug_before_'+image_name.split('/')[-1],
+                 img_before_aug, image_origin, image_spacing, dtype='float')
+
 
         if self.transform:
             image = self.transform(image)
 
-        return (image, label)
+        save_itk('aug_after_' + image_name.split('/')[-1],
+                 image.numpy(), image_origin, image_spacing, dtype='float')
+
+        # image = (image - torch.mean(image)) / torch.std(image)
+
+        return image, label
 
 
 class AddChannel:
@@ -352,7 +417,7 @@ class Path():
         self.data_dir = 'dataset'
 
         self.id_dir = os.path.join(self.model_dir, str(int(id)), 'fold_' + str(args.fold))
-        if check_id_dir:
+        if args.mode == 'train' and check_id_dir:  # when infer, do not check
             if os.path.isdir(self.id_dir):  # the dir for this id already exist
                 raise Exception('The same id_dir already exists', self.id_dir)
 
@@ -367,44 +432,46 @@ class Path():
         self.train_batch_preds = os.path.join(self.id_dir, 'train_batch_preds.csv')
         self.train_batch_preds_int = os.path.join(self.id_dir, 'train_batch_preds_int.csv')
         self.train_batch_preds_end5 = os.path.join(self.id_dir, 'train_batch_preds_end5.csv')
+        self.train_loss = os.path.join(self.id_dir, 'train_loss.csv')
+        self.train_data = os.path.join(self.id_dir, 'train_data.csv')
 
         self.valid_batch_label = os.path.join(self.id_dir, 'valid_batch_label.csv')
         self.valid_batch_preds = os.path.join(self.id_dir, 'valid_batch_preds.csv')
         self.valid_batch_preds_int = os.path.join(self.id_dir, 'valid_batch_preds_int.csv')
         self.valid_batch_preds_end5 = os.path.join(self.id_dir, 'valid_batch_preds_end5.csv')
+        self.valid_loss = os.path.join(self.id_dir, 'valid_loss.csv')
+        self.valid_data = os.path.join(self.id_dir, 'valid_data.csv')
 
         self.test_batch_label = os.path.join(self.id_dir, 'test_batch_label.csv')
         self.test_batch_preds = os.path.join(self.id_dir, 'test_batch_preds.csv')
         self.test_batch_preds_int = os.path.join(self.id_dir, 'test_batch_preds_int.csv')
         self.test_batch_preds_end5 = os.path.join(self.id_dir, 'test_batch_preds_end5.csv')
-
-        self.train_loss = os.path.join(self.id_dir, 'train_loss.csv')
-        self.valid_loss = os.path.join(self.id_dir, 'valid_loss.csv')
         self.test_loss = os.path.join(self.id_dir, 'test_loss.csv')
+        self.test_data = os.path.join(self.id_dir, 'test_data.csv')
 
 
-def get_transform():
-    rotation = 20
+def get_transform(mode=None):
+    rotation = 90
     patch_size = 480
     image_size = 512
     vertflip = 0.5
     horiflip = 0.5
+    xforms = [AddChannel()]
+    if mode == 'train':
+        xforms.extend([
+            # RandomAffine(degrees=20, scale=(0.8, 1.2),
+            # RandomCrop(patch_size),
+            # CenterCrop(patch_size),
+            # FiveCrop(patch_size), # may lead to more output
+            RandomRotation(rotation),  # minimum value
+            CenterCrop(image_size),
+            RandomHorizontalFlip(p=horiflip),
+            RandomVerticalFlip(p=vertflip),
+            # ScaleIntensityRanged(keys[0], a_min=-1000.0, a_max=500.0, b_min=0.0, b_max=1.0, clip=True),
+            # RandGaussianNoised(keys[0], prob=0.3, std=0.01),
+            monai.transforms.RandGaussianNoise()
+        ])
 
-    xforms = [
-
-        AddChannel(),
-        Resize(image_size),
-        # RandomAffine(degrees=20, scale=(0.8, 1.2),
-        # RandomCrop(patch_size),
-        # CenterCrop(patch_size),
-        # FiveCrop(patch_size), # may lead to more output
-        RandomRotation(rotation),
-        RandomHorizontalFlip(p=horiflip),
-        RandomVerticalFlip(p=vertflip),
-        # ScaleIntensityRanged(keys[0], a_min=-1000.0, a_max=500.0, b_min=0.0, b_max=1.0, clip=True),
-        # RandGaussianNoised(keys[0], prob=0.3, std=0.01),
-        monai.transforms.RandGaussianNoise()
-    ]
     transform = transforms.Compose(xforms)
     global log_dict
     log_dict['RandomVerticalFlip'] = vertflip
@@ -450,7 +517,7 @@ def record_GPU_info():
 def appendrows_to(fpath, data):
     with open(fpath, 'a') as csv_file:
         writer = csv.writer(csv_file, delimiter=',')
-        if len(data.shape)==1:  # when data.shape==(batch_size,) in classification task
+        if len(data.shape) == 1:  # when data.shape==(batch_size,) in classification task
             data = data.reshape(-1, 1)
         writer.writerows(data)
 
@@ -518,6 +585,8 @@ def start_run(mode, net, dataloader, amp, epochs, device, loss_fun, loss_fun_mae
     total_loss_mae = 0
     total_loss_mae_end5 = 0
     for batch_x, batch_y in dataloader:
+
+
         batch_x = batch_x.to(device)
         batch_y = batch_y.to(device)
         if args.r_c == "c":
@@ -585,9 +654,6 @@ def start_run(mode, net, dataloader, amp, epochs, device, loss_fun, loss_fun_mae
         p1 = threading.Thread(target=record_GPU_info)
         p1.start()
 
-        if epoch_idx == epochs - 1:  # final epoch
-            record_preds(mode, batch_y, pred, mypath)
-
     ave_loss = total_loss / batch_idx
     ave_loss_mae = total_loss_mae / batch_idx
     ave_loss_mae_end5 = total_loss_mae_end5 / batch_idx
@@ -602,8 +668,12 @@ def start_run(mode, net, dataloader, amp, epochs, device, loss_fun, loss_fun_mae
         writer.writerow([epoch_idx, ave_loss, ave_loss_mae, ave_loss_mae_end5])
 
     if args.mode == 'train' and valid_mae_best is not None:
-        if loss_mae < valid_mae_best:
+        if ave_loss_mae < valid_mae_best:
+            print("old valid loss mae is: ", valid_mae_best)
+            print("new valid loss mae is: ", ave_loss_mae)
+
             valid_mae_best = ave_loss_mae
+
             print('this model is the best one, save it. epoch id: ', epoch_idx)
             torch.save(net.state_dict(), mypath.model_fpath)
             print('save_successfully at ', mypath.model_fpath)
@@ -614,8 +684,49 @@ def start_run(mode, net, dataloader, amp, epochs, device, loss_fun, loss_fun_mae
 
 def get_column(n, tr_y):
     column = [i[n] for i in tr_y]
-    column = [j/5 for j in column]  # convert labels from [0,5,10, ..., 100] to [0, 1, 2, ..., 20]
+    column = [j / 5 for j in column]  # convert labels from [0,5,10, ..., 100] to [0, 1, 2, ..., 20]
     return column
+
+
+def split_ts_data_by_levels(data_dir, label_file):
+    level_x, level_y = load_level_names_from_dir(data_dir, label_file,
+                                                 levels=[1, 2, 3, 4, 5])  # level names and level labels
+    if args.ts_level_nb == 135:
+        test_count = {0: 56, 5: 12, 10: 9, 15: 6, 20: 6, 25: 6, 30: 6, 35: 4, 40: 5, 45: 3, 50: 4, 55: 3, 60: 3, 65: 2,
+                      70: 2, 75: 1, 80: 2, 85: 1, 90: 2, 95: 0, 100: 2}
+    elif args.ts_level_nb == 235:
+        test_count = {0: 115, 5: 24, 10: 18, 15: 9, 20: 12, 25: 9, 30: 9, 35: 6, 40: 8, 45: 3, 50: 7, 55: 3, 60: 3,
+                      65: 2, 70: 2, 75: 1, 80: 1, 85: 1, 90: 2, 95: 0, 100: 1}
+
+    tr_vd_x, tr_vd_y, test_x, test_y = [], [], [], []
+    for x, y in zip(level_x, level_y):
+        if test_count[y[0]] > 0:  # disext score > 0
+            test_x.append(x)
+            test_y.append(y)
+            test_count[y[0]] -= 1
+            continue
+        else:
+            tr_vd_x.append(x)
+            tr_vd_y.append(y)
+    tr_vd_x, tr_vd_y, test_x, test_y = map(np.array, [tr_vd_x, tr_vd_y, test_x, test_y])
+
+    return tr_vd_x, tr_vd_y, test_x, test_y
+
+
+def save_xy(tr_x, tr_y, mode, mypath):
+    if mode == 'train':
+        path = mypath.train_data
+    elif mode == 'valid':
+        path = mypath.valid_data
+    elif mode == 'test':
+        path = mypath.test_data
+    else:
+        raise Exception("wrong mode", mode)
+    with open(path, 'a') as f:
+        writer = csv.writer(f)
+        for x, y in zip(tr_x, tr_y):
+            writer.writerow([x, y])
+
 
 def prepare_data():
     # get data_x names
@@ -623,29 +734,32 @@ def prepare_data():
     label_file = "dataset/SSc_DeepLearning/GohScores.xlsx"
     log_dict['data_dir'] = data_dir
     log_dict['label_file'] = label_file
-    pat_names = get_dir_pats(data_dir, label_file)
-    pat_names = np.array(pat_names)
-    ts_pat_names = pat_names[-args.nb_test:]
-    tr_vd_pat_names = pat_names[:-args.nb_test]
+    # pat_names = get_dir_pats(data_dir, label_file)
+    # pat_names = np.array(pat_names)
+
+    tr_vd_level_names, tr_vd_level_y, test_level_names, test_level_y = split_ts_data_by_levels(data_dir, label_file)
+
     kf5 = KFold(n_splits=5, shuffle=True, random_state=42)  # for future reproduction
     log_dict['data_shuffle'] = True
     log_dict['data_shuffle_seed'] = 42
-    kf_list = list(kf5.split(tr_vd_pat_names))
-    tr_pat_idx, vd_pat_idx = kf_list[args.fold - 1]
+    kf_list = list(kf5.split(tr_vd_level_names))
+    tr_level_idx, vd_level_idx = kf_list[args.fold - 1]
 
-    log_dict['train_nb'] = len(tr_pat_idx)
-    log_dict['valid_nb'] = len(vd_pat_idx)
-    log_dict['test_nb'] = len(ts_pat_names)
+    log_dict['train_level_nb'] = len(tr_level_idx)
+    log_dict['valid_level_nb'] = len(vd_level_idx)
+    log_dict['test_level_nb'] = len(test_level_names)
 
-    log_dict['train_index_head'] = tr_pat_idx[:20]
-    log_dict['valid_index_head'] = vd_pat_idx[:20]
+    log_dict['train_index_head'] = tr_level_idx[:20]
+    log_dict['valid_index_head'] = vd_level_idx[:20]
 
-    tr_pat_names = tr_vd_pat_names[tr_pat_idx]
-    vd_pat_names = tr_vd_pat_names[vd_pat_idx]
+    tr_level_names = tr_vd_level_names[tr_level_idx]
+    tr_level_y = tr_vd_level_y[tr_level_idx]
+    vd_level_names = tr_vd_level_names[vd_level_idx]
+    vd_level_y = tr_vd_level_y[vd_level_idx]
 
-    tr_x, tr_y = load_data_of_pats(tr_pat_names, label_file)
-    vd_x, vd_y = load_data_of_pats(vd_pat_names, label_file)
-    ts_x, ts_y = load_data_of_pats(ts_pat_names, label_file)
+    tr_x, tr_y = load_data_of_levels(tr_level_names, tr_level_y)
+    vd_x, vd_y = load_data_of_levels(vd_level_names, vd_level_y)
+    ts_x, ts_y = load_data_of_levels(test_level_names, test_level_y)
 
     return tr_x, tr_y, vd_x, vd_y, ts_x, ts_y
 
@@ -664,8 +778,11 @@ def train(id):
         net = get_net(args.net, 3)
     else:
         net = get_net(args.net, 21)  # classification can only predict 21 classes of one label
-    transform = get_transform()
     tr_x, tr_y, vd_x, vd_y, ts_x, ts_y = prepare_data()
+    save_xy(tr_x, tr_y, 'train', mypath)
+    save_xy(vd_x, vd_y, 'valid', mypath)
+    save_xy(ts_x, ts_y, 'test', mypath)
+
     if args.r_c == "c":  # classification target
         if args.cls == "disext":
             tr_y, vd_y, ts_y = get_column(0, tr_y), get_column(0, vd_y), get_column(0, ts_y)
@@ -679,7 +796,7 @@ def train(id):
     if args.sampler:
         disext_list = []
         for sample in tr_y:
-            if type(sample) is list:
+            if type(sample) in [list, np.ndarray]:
                 disext_list.append(sample[0])
             else:
                 disext_list.append(sample)
@@ -697,13 +814,13 @@ def train(id):
     else:
         sampler = None
 
-    tr_dataset = SScScoreDataset(tr_x, tr_y, transform=transform)
-    vd_dataset = SScScoreDataset(vd_x, vd_y, transform=transform)
-    ts_dataset = SScScoreDataset(ts_x, ts_y, transform=transform)
+    tr_dataset = SScScoreDataset(tr_x, tr_y, transform= get_transform('train'))
+    vd_dataset = SScScoreDataset(vd_x, vd_y, transform= get_transform())
+    ts_dataset = SScScoreDataset(ts_x, ts_y, transform= get_transform())
 
     batch_size = 10
     log_dict['batch_size'] = batch_size
-    workers = 14
+    workers = 10
     log_dict['loader_workers'] = workers
     train_dataloader = DataLoader(tr_dataset, batch_size=batch_size, shuffle=False, num_workers=workers,
                                   sampler=sampler)
@@ -715,9 +832,31 @@ def train(id):
         loss_fun = nn.CrossEntropyLoss()  # for classification task
         log_dict['loss_fun'] = 'CE'
     else:
-        loss_fun = nn.MSELoss()  # for regression task
-        log_dict['loss_fun'] = 'MSE'
+        if args.loss == 'mae':
+            loss_fun = nn.L1Loss()
+        elif args.loss == 'smooth_mae':
+            loss_fun = nn.SmoothL1Loss()
+        elif args.loss == 'mse':
+            loss_fun = nn.MSELoss()
+        elif args.loss == 'mse+mae':
+            loss_fun = nn.MSELoss() + nn.L1Loss()  # for regression task
+        else:
+            raise Exception("loss function is not correct ", args.loss)
     loss_fun_mae = nn.L1Loss()
+
+    class MsePlusMae(nn.Module):
+        """Dice and Xentropy loss"""
+
+        def __init__(self):
+            super().__init__()
+            self.mse = nn.MSELoss()
+            self.mae = nn.L1Loss()
+
+        def forward(self, y_pred, y_true):
+            mse = self.mse(y_pred, y_true)
+            mae = self.mae(y_pred, y_true)
+            print(f"mse loss: {mse}, mae loss: {mae}")
+            return mse + mae
 
     lr = 1e-4
     log_dict[nameof(lr)] = lr
@@ -746,10 +885,45 @@ def train(id):
         # if i == epochs - 1:
         start_run('test', net, test_dataloader, amp, epochs, device, loss_fun, loss_fun_mae, opt, scaler, mypath, i)
 
+    net.load_state_dict(torch.load(mypath.model_fpath, map_location=device))
+
+    record_best_preds(net, train_dataloader, valid_dataloader, test_dataloader, mypath, device, amp)
+
     confusion.confusion(mypath.train_batch_label, mypath.train_batch_preds_end5)
     confusion.confusion(mypath.valid_batch_label, mypath.valid_batch_preds_end5)
     confusion.confusion(mypath.test_batch_label, mypath.test_batch_preds_end5)
 
+
+def record_best_preds(net, train_dataloader, valid_dataloader, test_dataloader, mypath, device, amp):
+    dataloader_dict = {'train': train_dataloader, 'valid': valid_dataloader, 'test': test_dataloader}
+
+    for mode, dataloader in dataloader_dict.items():
+        print("Start write pred to disk")
+        for batch_x, batch_y in dataloader:
+            batch_x = batch_x.to(device)
+            batch_y = batch_y.to(device)
+            if args.r_c == "c":
+                batch_y = batch_y.type(torch.LongTensor)  # crossentropy requires LongTensor
+                batch_y = batch_y.to(device)
+            if amp:
+                with torch.cuda.amp.autocast():
+                    with torch.no_grad():
+                        pred = net(batch_x)
+            else:
+                with torch.no_grad():
+                    pred = net(batch_x)
+            if args.r_c == "c":
+                pred = torch.argmax(pred, dim=1)
+                pred = pred.type(torch.FloatTensor)
+                pred = pred.to(device)
+                pred = pred * 5  # convert back to original scores
+                batch_y = batch_y * 5  # convert back to original scores
+
+            record_preds(mode, batch_y, pred, mypath)
+
+            if mode == 'train':
+                p1 = threading.Thread(target=record_GPU_info)
+                p1.start()
 
 
 def record_preds(mode, batch_y, pred, mypath):
@@ -774,7 +948,6 @@ def record_preds(mode, batch_y, pred, mypath):
         appendrows_to(mypath.test_batch_preds, batch_preds)
         appendrows_to(mypath.test_batch_preds_int, batch_preds_int)
         appendrows_to(mypath.test_batch_preds_end5, batch_preds_end5)
-
 
 
 def record_experiment(record_file, id=None):
