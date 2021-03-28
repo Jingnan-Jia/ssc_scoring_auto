@@ -366,30 +366,26 @@ class SScScoreDataset(Dataset):
             idx = idx.tolist()
 
         image = self.data_x_tensor[idx]
-        image_name = self.data_x_names[idx]
-        image_origin, image_spacing = self.data_x_or_sp[idx]
-        # image_info = {'name':image_name, 'origin':image_origin, 'spacing':image_spacing}
-        label = self.data_y_tensor[idx]
 
-        # if type(image_info['origin']) is torch.Tensor:
-        #     image_info['origin'] = image_info['origin'].numpy()
-        # if type(image_info['spacing']) is torch.Tensor:
-        #     image_info['spacing'] = image_info['spacing'].numpy()
+        check_aug_effect = 0
+        if check_aug_effect:
+            image_name = self.data_x_names[idx]
+            image_origin, image_spacing = self.data_x_or_sp[idx]
+            # image_info = {'name':image_name, 'origin':image_origin, 'spacing':image_spacing}
+            label = self.data_y_tensor[idx]
 
-        # ori = list(image_info['origin'][0])
-        image_origin = np.append(image_origin, 1)
-        # sp = list(image_info['spacing'][0])
-        image_spacing = np.append(image_spacing, 1)
-        print(image_name)
+            image_origin = np.append(image_origin, 1)
+            image_spacing = np.append(image_spacing, 1)
+            print(image_name)
 
-        def crop_center(img, cropx, cropy):
-            y, x = img.shape
-            startx = x // 2 - (cropx // 2)
-            starty = y // 2 - (cropy // 2)
-            return img[starty:starty + cropy, startx:startx + cropx]
-        img_before_aug = crop_center(image.numpy(), 512, 512)
-        save_itk('aug_before_'+image_name.split('/')[-1],
-                 img_before_aug, image_origin, image_spacing, dtype='float')
+            def crop_center(img, cropx, cropy):
+                y, x = img.shape
+                startx = x // 2 - (cropx // 2)
+                starty = y // 2 - (cropy // 2)
+                return img[starty:starty + cropy, startx:startx + cropx]
+            img_before_aug = crop_center(image.numpy(), 512, 512)
+            save_itk('aug_before_'+image_name.split('/')[-1],
+                     img_before_aug, image_origin, image_spacing, dtype='float')
 
 
         if self.transform:
@@ -418,7 +414,7 @@ class Path():
         self.model_dir = 'models'
         self.data_dir = 'dataset'
 
-        self.id_dir = os.path.join(self.model_dir, str(int(id)), 'fold_' + str(args.fold))
+        self.id_dir = os.path.join(self.model_dir, str(int(id)))  # +'_fold_' + str(args.fold)
         if args.mode == 'train' and check_id_dir:  # when infer, do not check
             if os.path.isdir(self.id_dir):  # the dir for this id already exist
                 raise Exception('The same id_dir already exists', self.id_dir)
@@ -473,6 +469,8 @@ def get_transform(mode=None):
             # RandGaussianNoised(keys[0], prob=0.3, std=0.01),
             monai.transforms.RandGaussianNoise()
         ])
+    else:
+        xforms.append(CenterCrop(image_size))
 
     transform = transforms.Compose(xforms)
     global log_dict
@@ -862,8 +860,9 @@ def train(id):
             return mse + mae
 
     lr = 1e-4
-    log_dict[nameof(lr)] = lr
-    opt = torch.optim.Adam(net.parameters(), lr=lr)
+    log_dict['lr'] = lr
+    opt = torch.optim.Adam(net.parameters(), lr=lr, weight_decay=1e-5)
+    log_dict['weight_decay'] = 1e-5
     if amp:
         scaler = torch.cuda.amp.GradScaler()
     else:
