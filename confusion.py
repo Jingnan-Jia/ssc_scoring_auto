@@ -59,7 +59,7 @@ def confusion(label_file, pred_file):
     for column in columns:
         label = df_label[column].to_numpy().reshape(-1, 1)
         pred = df_pred[column].to_numpy().reshape(-1, 1)
-        kappa = cohen_kappa_score(label, pred)
+        kappa = cohen_kappa_score(label, pred, weights='linear')
         print(f"kapa for {column} is {kappa}")
 
         pred[pred < 0] = 0
@@ -89,7 +89,7 @@ def confusion(label_file, pred_file):
         acc_np = get_acc_np(diag_np, total_np)
         df.loc[:, 'Acc'] = acc_np
         df.loc[:, 'MAE'] = mae_np
-        df.loc[0, 'kappa'] = kappa
+        df.loc[0, 'Weighted_kappa'] = kappa
         df.replace(0, np.nan, inplace=True)
         for idx, row in df.iterrows():
             if pd.isna(df.at[idx, 'Acc']) and not pd.isna(df.at[idx, 'Total']):
@@ -133,49 +133,8 @@ def confusion(label_file, pred_file):
         print("Finish confsion matrix plot and csv of ", column)
 
 
-
-
-class Path():
-    def __init__(self, id, check_id_dir=False):
-        self.id = id
-        self.slurmlog_dir = 'slurmlogs'
-        self.model_dir = 'models'
-        self.data_dir = 'dataset'
-
-        self.id_dir = os.path.join(self.model_dir, str(int(id)), 'fold_' + str(args.fold))
-        if check_id_dir:
-            if os.path.isdir(self.id_dir):  # the dir for this id already exist
-                raise Exception('The same id_dir already exists', self.id_dir)
-
-        for dir in [self.slurmlog_dir, self.model_dir, self.data_dir, self.id_dir]:
-            if not os.path.isdir(dir):
-                os.makedirs(dir)
-                print('successfully create directory:', dir)
-
-        self.model_fpath = os.path.join(self.id_dir, 'model.pt')
-
-        self.train_batch_label = os.path.join(self.id_dir, 'train_batch_label.csv')
-        self.train_batch_preds = os.path.join(self.id_dir, 'train_batch_preds.csv')
-        self.train_batch_preds_int = os.path.join(self.id_dir, 'train_batch_preds_int.csv')
-        self.train_batch_preds_end5 = os.path.join(self.id_dir, 'train_batch_preds_end5.csv')
-
-        self.valid_batch_label = os.path.join(self.id_dir, 'valid_batch_label.csv')
-        self.valid_batch_preds = os.path.join(self.id_dir, 'valid_batch_preds.csv')
-        self.valid_batch_preds_int = os.path.join(self.id_dir, 'valid_batch_preds_int.csv')
-        self.valid_batch_preds_end5 = os.path.join(self.id_dir, 'valid_batch_preds_end5.csv')
-
-        self.test_batch_label = os.path.join(self.id_dir, 'test_batch_label.csv')
-        self.test_batch_preds = os.path.join(self.id_dir, 'test_batch_preds.csv')
-        self.test_batch_preds_int = os.path.join(self.id_dir, 'test_batch_preds_int.csv')
-        self.test_batch_preds_end5 = os.path.join(self.id_dir, 'test_batch_preds_end5.csv')
-
-        self.train_loss = os.path.join(self.id_dir, 'train_loss.csv')
-        self.valid_loss = os.path.join(self.id_dir, 'valid_loss.csv')
-        self.test_loss = os.path.join(self.id_dir, 'test_loss.csv')
-
-
 if __name__ == "__main__":
-    ids = [361]
+    ids = [528]
     ensemble = False
 
     for id in ids:
@@ -184,10 +143,11 @@ if __name__ == "__main__":
         # confusion(mypath.valid_batch_label, mypath.valid_batch_preds_end5)
         # confusion(mypath.test_batch_label, mypath.test_batch_preds_end5)
         if not ensemble:
+            print(' start comfusion')
             id_dir = "/data/jjia/ssc_scoring/models/" + str(id)
             for mode in ['train', 'valid', 'test']:
-                label_files = sorted(glob.glob(os.path.join(id_dir, "*", mode + "_batch_label.csv")))
-                pred_files = sorted(glob.glob(os.path.join(id_dir, "*", mode + "_batch_preds_end5.csv")))
+                label_files = sorted(glob.glob(os.path.join(id_dir, mode + "_label.csv")))
+                pred_files = sorted(glob.glob(os.path.join(id_dir, mode + "_pred_int_end5.csv")))
                 for label_file, pred_file in zip(label_files, pred_files):
                     confusion(label_file, pred_file)
         else:
