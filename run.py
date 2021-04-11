@@ -27,9 +27,8 @@ from torch.utils.data import Dataset, DataLoader
 from torch.utils.data import WeightedRandomSampler
 from torchvision import transforms
 from torchvision.transforms import Resize, RandomHorizontalFlip, RandomVerticalFlip, CenterCrop, RandomAffine
-
 from monai.transforms import NormalizeIntensity, ScaleIntensityRange, RandGaussianNoise
-
+import matplotlib.pyplot as plt
 from varname import nameof
 from typing import (Dict, List, Tuple, Set, Deque, NamedTuple, IO, Pattern, Match, Text,
                     Optional, Sequence, Union, TypeVar, Iterable, Mapping, MutableMapping, Any)
@@ -450,6 +449,14 @@ class AddChannel():
         return img[None]
 
 
+class MyNormalize():
+    def __call__(self, image):
+        mean, std = torch.mean(image), torch.std(image)
+        image = image - mean
+        image = image / std
+        return image
+
+
 class Clip():
     def __init__(self, min, max):
         self.min = min
@@ -525,7 +532,7 @@ def get_transform(mode=None):
     else:
         xforms.append(CenterCrop(image_size))
 
-    xforms.append(NormalizeIntensity())
+    xforms.append(MyNormalize())
 
     transform = transforms.Compose(xforms)
     global log_dict
