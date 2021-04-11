@@ -26,8 +26,10 @@ from sklearn.model_selection import KFold
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.data import WeightedRandomSampler
 from torchvision import transforms
-from torchvision.transforms import Resize, RandomRotation, RandomHorizontalFlip, RandomVerticalFlip, functional, \
-    CenterCrop
+from torchvision.transforms import Resize, RandomHorizontalFlip, RandomVerticalFlip, CenterCrop, RandomAffine
+
+from monai.transforms import NormalizeIntensity, ScaleIntensityRange, RandGaussianNoise
+
 from varname import nameof
 from typing import (Dict, List, Tuple, Set, Deque, NamedTuple, IO, Pattern, Match, Text,
                     Optional, Sequence, Union, TypeVar, Iterable, Mapping, MutableMapping, Any)
@@ -66,6 +68,7 @@ class SmallNet(nn.Module):
         x = torch.flatten(x, 1)
         x = self.classifier(x)
         return x
+
 
 def get_net(name: str, nb_cls: int):
     if 'vgg' in name:
@@ -364,6 +367,7 @@ def clip(x_np, min, max):
     x_np[x_np < min] = min
     return x_np
 
+
 class SScScoreDataset(Dataset):
     """SSc scoring dataset."""
 
@@ -377,19 +381,20 @@ class SScScoreDataset(Dataset):
         print('loading data ...')
         self.data_x = [load_itk(x, require_sp_po=True) for x in self.data_x_names]
         self.data_x_np = [i[0] for i in self.data_x]
+        normalize0to1 = ScaleIntensityRange(a_min=-1500.0, a_max=1500.0, b_min=0.0, b_max=1.0, clip=True)
 
-        self.data_x_np = [clip(x_np, -1500, 1500) for x_np in self.data_x_np]
+        self.data_x_np = [normalize0to1(x_np) for x_np in self.data_x_np]
+        # scale data to 0~1, it's convinent for future transform during dataloader
         self.data_x_or_sp = [[i[1], i[2]] for i in self.data_x]
 
-        self.data_x_np = [normalize(x) for x in self.data_x_np]
+        # self.data_x_np = [normalize(x) for x in self.data_x_np]
 
-        log_dict['normalize_data'] = True
+        # log_dict['normalize_data'] = True
 
         self.data_x_np = [x.astype(np.float32) for x in self.data_x_np]
         self.data_y_np = [y.astype(np.float32) for y in self.data_y_list]
-        self.min = [np.min(x) for x in self.data_x_np]
-        self.data_x_np = [np.pad(x, pad_width=((128, 128), (128, 128)), mode='constant', constant_values=(m,)) for x, m
-                          in zip(self.data_x_np, self.min)]
+        # self.min = [np.min(x) for x in self.data_x_np]
+        self.data_x_np = [np.pad(x, pad_width=((128, 128), (128, 128)), mode='constant') for x in self.data_x_np]
         self.data_x_tensor = [torch.as_tensor(x) for x in self.data_x_np]
         self.data_y_tensor = [torch.as_tensor(y) for y in self.data_y_np]
 
@@ -454,8 +459,8 @@ class Clip():
         """
         Apply the transform to `img`.
         """
-        img[img<self.min] = self.min
-        img[img>self.max] = self.max
+        img[img < self.min] = self.min
+        img[img > self.max] = self.max
         return img
 
 
@@ -498,36 +503,37 @@ class Path():
 
 
 def get_transform(mode=None):
+    """
+    The input image data is from 0 to 1.
+    :param mode:
+    :return:
+    """
     rotation = 90
-    patch_size = 480
-    image_size = 512  
+    image_size = 512
     vertflip = 0.5
     horiflip = 0.5
+    shift = (10 / 512, 10 / 512)
     xforms = [AddChannel()]
     if mode == 'train':
         xforms.extend([
-            # RandomAffine(degrees=20, scale=(0.8, 1.2),
-            # RandomCrop(patch_size),
-            # CenterCrop(patch_size),
-            # FiveCrop(patch_size), # may lead to more output
-            RandomRotation(rotation),  # minimum value
+            RandomAffine(degrees=rotation, translate=shift),
             CenterCrop(image_size),
             RandomHorizontalFlip(p=horiflip),
             RandomVerticalFlip(p=vertflip),
-            # ScaleIntensityRanged(keys[0], a_min=-1000.0, a_max=500.0, b_min=0.0, b_max=1.0, clip=True),
-            # RandGaussianNoised(keys[0], prob=0.3, std=0.01),
-            monai.transforms.RandGaussianNoise()
+            RandGaussianNoise()
         ])
     else:
         xforms.append(CenterCrop(image_size))
+
+    xforms.append(NormalizeIntensity())
 
     transform = transforms.Compose(xforms)
     global log_dict
     log_dict['RandomVerticalFlip'] = vertflip
     log_dict['RandomHorizontalFlip'] = horiflip
     log_dict['RandomRotation'] = rotation
+    log_dict['RandomShift'] = shift
     log_dict['image_size'] = image_size
-    # log_dict['RandomCrop'] = patch_size
     log_dict['RandGaussianNoise'] = 0.1
 
     return transform
@@ -998,7 +1004,8 @@ def train(id: int):
 
     record_best_preds(net, train_dataloader, valid_dataloader, test_dataloader, mypath, device, amp)
     for mode in ['train', 'valid', 'test']:
-        confusion.confusion(mypath.label(mode), mypath.pred_end5(mode))
+        out_dt = confusion.confusion(mypath.label(mode), mypath.pred_end5(mode))
+        log_dict.update(out_dt)
 
 
 def record_best_preds(net, train_dataloader, valid_dataloader, test_dataloader, mypath, device, amp):
@@ -1174,6 +1181,7 @@ def record_experiment(record_file: str, current_id: Optional[int] = None):
             shutil.copy(record_file, 'cp_' + record_file)
             df_lastrow = df.iloc[[-1]]
             df_lastrow.to_csv(mypath.id_dir + '/' + record_file, index=False)  # save the record of the current ex
+
 
 def check_time_difference(t1: datetime, t2: datetime):
     t1_date = datetime.datetime(t1.year, t1.month, t1.day, t1.hour, t1.minute, t1.second)

@@ -56,6 +56,7 @@ def confusion(label_file, pred_file):
         columns = ['disext', 'gg', 'rept']
     df_label = pd.read_csv(label_file, names=columns)
     df_pred = pd.read_csv(pred_file, names=columns)
+    out_dt = {}
     for column in columns:
         label = df_label[column].to_numpy().reshape(-1, 1)
         pred = df_pred[column].to_numpy().reshape(-1, 1)
@@ -90,6 +91,10 @@ def confusion(label_file, pred_file):
         df.loc[:, 'Acc'] = acc_np
         df.loc[:, 'MAE'] = mae_np
         df.loc[0, 'Weighted_kappa'] = kappa
+        out_dt['ave_Acc_'+column] = np.mean(acc_np)
+        out_dt['ave_MAE_'+column] = np.mean(mae_np)
+        out_dt['ave_WKappa_'+column] = kappa
+
         df.replace(0, np.nan, inplace=True)
         for idx, row in df.iterrows():
             if pd.isna(df.at[idx, 'Acc']) and not pd.isna(df.at[idx, 'Total']):
@@ -131,7 +136,12 @@ def confusion(label_file, pred_file):
         # colormap.set_bad("black")
 
         print("Finish confsion matrix plot and csv of ", column)
+    if len(df_label.columns)==3:
+        out_dt['ave_Acc_all'] = (out_dt['ave_Acc_disext'] + out_dt['ave_Acc_gg'] + out_dt['ave_Acc_rept']) / 3
+        out_dt['ave_MAE_all'] = (out_dt['ave_MAE_disext'] + out_dt['ave_MAE_gg'] + out_dt['ave_MAE_rept']) / 3
+        out_dt['ave_WKappa_all'] = (out_dt['ave_WKappa_disext'] + out_dt['ave_WKappa_gg'] + out_dt['ave_WKappa_rept']) / 3
 
+    return out_dt
 
 if __name__ == "__main__":
     ids = [528]
