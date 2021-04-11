@@ -142,16 +142,17 @@ if __name__ == "__main__":
         # confusion(mypath.train_batch_label, mypath.train_batch_preds_end5)
         # confusion(mypath.valid_batch_label, mypath.valid_batch_preds_end5)
         # confusion(mypath.test_batch_label, mypath.test_batch_preds_end5)
+        abs_dir_path = os.path.dirname(os.path.realpath(__file__))
+        id_dir = abs_dir_path + "/models/" + str(id)
+
         if not ensemble:
             print(' start comfusion')
-            id_dir = "/data/jjia/ssc_scoring/models/" + str(id)
             for mode in ['train', 'valid', 'test']:
                 label_files = sorted(glob.glob(os.path.join(id_dir, mode + "_label.csv")))
                 pred_files = sorted(glob.glob(os.path.join(id_dir, mode + "_pred_int_end5.csv")))
                 for label_file, pred_file in zip(label_files, pred_files):
                     confusion(label_file, pred_file)
         else:
-            id_dir = "/data/jjia/ssc_scoring/models/" + str(id)
             label_files = sorted(glob.glob(os.path.join(id_dir, "*", "test_batch_label.csv")))
             pred_files = sorted(glob.glob(os.path.join(id_dir, "*", "*ensemble.csv")))
             for label_file, pred_file in zip(label_files, pred_files):
