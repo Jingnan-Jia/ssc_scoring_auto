@@ -322,9 +322,14 @@ def load_data_of_a_level(dir_pat: str, df_excel: pd.DataFrame, level: int) -> Tu
     """
     file_prefix = "Level" + str(level)
     # 3 neighboring slices for one level
-    x_up = glob.glob(os.path.join(dir_pat, file_prefix + "_up*"))[0]
-    x_middle = glob.glob(os.path.join(dir_pat, file_prefix + "_middle*"))[0]
-    x_down = glob.glob(os.path.join(dir_pat, file_prefix + "_down*"))[0]
+    if args.masked_by_lung:
+        x_up = glob.glob(os.path.join(dir_pat, file_prefix + "_up_MaskedByLung.mha"))[0]
+        x_middle = glob.glob(os.path.join(dir_pat, file_prefix + "_middle_MaskedByLung.mha"))[0]
+        x_down = glob.glob(os.path.join(dir_pat, file_prefix + "_down_MaskedByLung.mha"))[0]
+    else:
+        x_up = glob.glob(os.path.join(dir_pat, file_prefix + "_up.mha"))[0]
+        x_middle = glob.glob(os.path.join(dir_pat, file_prefix + "_middle.mha"))[0]
+        x_down = glob.glob(os.path.join(dir_pat, file_prefix + "_down.mha"))[0]
     x = [x_up, x_middle, x_down]
 
     excel = df_excel
@@ -354,6 +359,11 @@ def normalize(image):
     return image
 
 
+def clip(x_np, min, max):
+    x_np[x_np > max] = max
+    x_np[x_np < min] = min
+    return x_np
+
 class SScScoreDataset(Dataset):
     """SSc scoring dataset."""
 
@@ -367,6 +377,8 @@ class SScScoreDataset(Dataset):
         print('loading data ...')
         self.data_x = [load_itk(x, require_sp_po=True) for x in self.data_x_names]
         self.data_x_np = [i[0] for i in self.data_x]
+
+        self.data_x_np = [clip(x_np, -1500, 1500) for x_np in self.data_x_np]
         self.data_x_or_sp = [[i[1], i[2]] for i in self.data_x]
 
         self.data_x_np = [normalize(x) for x in self.data_x_np]
@@ -425,12 +437,26 @@ class SScScoreDataset(Dataset):
         return image, label
 
 
-class AddChannel:
+class AddChannel():
     def __call__(self, img):
         """
         Apply the transform to `img`.
         """
         return img[None]
+
+
+class Clip():
+    def __init__(self, min, max):
+        self.min = min
+        self.max = max
+
+    def __call__(self, img):
+        """
+        Apply the transform to `img`.
+        """
+        img[img<self.min] = self.min
+        img[img>self.max] = self.max
+        return img
 
 
 class Path():
@@ -686,7 +712,7 @@ def start_run(mode, net, dataloader, amp, epochs, device, loss_fun, loss_fun_mae
                 loss.backward()
                 opt.step()
 
-        print(loss.item())
+        print(loss.item(), pred[0].clone().detach().cpu().numpy())
 
         total_loss += loss.item()
         total_loss_mae += loss_mae.item()
@@ -937,6 +963,7 @@ def train(id: int):
     train_dataloader = DataLoader(tr_dataset, batch_size=batch_size, shuffle=False, num_workers=workers,
                                   sampler=sampler)
     valid_dataloader = DataLoader(vd_dataset, batch_size=batch_size, shuffle=False, num_workers=workers)
+    # valid_dataloader = train_dataloader
     test_dataloader = DataLoader(ts_dataset, batch_size=batch_size, shuffle=False, num_workers=workers)
 
     net = net.to(device)
@@ -1078,8 +1105,9 @@ def record_experiment(record_file: str, current_id: Optional[int] = None):
                 df = correct_type(df)
 
                 df.to_csv(record_file, index=False)
-                df.to_csv(mypath.id_dir + '/' + record_file, index=False)
                 shutil.copy(record_file, 'cp_' + record_file)
+                df_lastrow = df.iloc[[-1]]
+                df_lastrow.to_csv(mypath.id_dir + '/' + record_file, index=False)  # save the record of the current ex
         return new_id
     else:  # at the end of this experiments, find the line of this id, and record the final information
         lock = FileLock(record_file + ".lock")
@@ -1139,12 +1167,13 @@ def record_experiment(record_file: str, current_id: Optional[int] = None):
             args_dict.update({'ID': current_id})
             for column in df:
                 if column in args_dict.keys() and type(args_dict[column]) is int:
+                    print(f'convert {df[column]} to float and then to Int64')
                     df[column] = df[column].astype(float).astype('Int64')  # correct str to float and then int
 
             df.to_csv(record_file, index=False)
-            df.to_csv(mypath.id_dir + '/' + record_file, index=False)
             shutil.copy(record_file, 'cp_' + record_file)
-
+            df_lastrow = df.iloc[[-1]]
+            df_lastrow.to_csv(mypath.id_dir + '/' + record_file, index=False)  # save the record of the current ex
 
 def check_time_difference(t1: datetime, t2: datetime):
     t1_date = datetime.datetime(t1.year, t1.month, t1.day, t1.hour, t1.minute, t1.second)
