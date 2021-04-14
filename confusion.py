@@ -45,13 +45,15 @@ def mae(df):
     total_np = np.array(total_ls)
     return mae_np, total_np
 
-def confusion(label_file, pred_file):
+def confusion(label_file, pred_file, label_nb=100, space=5):
     print("Start the save of confsion matrix plot and csv for: ")
     print(label_file)
     print(pred_file)
     df_label = pd.read_csv(label_file)
     if len(df_label.columns)==1:
         columns = ['unknown']
+    elif len(df_label.columns)==5:
+        columns = ['L1_pos', 'L2_pos', 'L3_pos', 'L4_pos', 'L5_pos']
     else:
         columns = ['disext', 'gg', 'rept']
     df_label = pd.read_csv(label_file, names=columns)
@@ -61,13 +63,13 @@ def confusion(label_file, pred_file):
         label = df_label[column].to_numpy().reshape(-1, 1)
         pred = df_pred[column].to_numpy().reshape(-1, 1)
         kappa = cohen_kappa_score(label, pred, weights='linear')
-        print(f"kapa for {column} is {kappa}")
+        print(f"weighted kappa for {column} is {kappa}")
 
         pred[pred < 0] = 0
-        pred[pred > 100] = 100
+        pred[pred > label_nb] = label_nb
 
-        index_label = np.arange(0, 101, 5)
-        index_pred = np.arange(0, 101, 5)
+        index_label = list(range(0, label_nb+1, space))
+        index_pred = list(range(0, label_nb+1, space))
 
         df = pd.DataFrame(0, index=index_label, columns=index_pred)
         scores = np.concatenate([label, pred], axis=1)
@@ -78,8 +80,6 @@ def confusion(label_file, pred_file):
             unique, counts = np.unique(rows[:, -1], return_counts=True)
             for u, c in zip(unique, counts):
                 df.at[idx, u] = c
-
-
 
         mae_np, total_np = mae(df)
 
@@ -136,10 +136,14 @@ def confusion(label_file, pred_file):
         # colormap.set_bad("black")
 
         print("Finish confsion matrix plot and csv of ", column)
-    if len(df_label.columns)==3:
-        out_dt['ave_Acc_all'] = (out_dt['ave_Acc_disext'] + out_dt['ave_Acc_gg'] + out_dt['ave_Acc_rept']) / 3
-        out_dt['ave_MAE_all'] = (out_dt['ave_MAE_disext'] + out_dt['ave_MAE_gg'] + out_dt['ave_MAE_rept']) / 3
-        out_dt['ave_WKappa_all'] = (out_dt['ave_WKappa_disext'] + out_dt['ave_WKappa_gg'] + out_dt['ave_WKappa_rept']) / 3
+    if len(df_label.columns)>1:
+        out_dt['ave_Acc_all'] = 0
+        out_dt['ave_MAE_all'] = 0
+        out_dt['ave_WKappa_all'] = 0
+        for col in columns:
+            out_dt['ave_Acc_all'] += out_dt['ave_Acc_' + col]
+            out_dt['ave_MAE_all'] += out_dt['ave_MAE_' + col]
+            out_dt['ave_WKappa_all'] += out_dt['ave_WKappa_' + col]
 
     return out_dt
 
