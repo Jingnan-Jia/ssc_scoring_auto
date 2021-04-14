@@ -23,12 +23,12 @@ parser.add_argument('--fold', choices=(1, 2, 3, 4), help='5-fold training', type
 parser.add_argument('--level', choices=(1, 2, 3, 4, 5, 0), help='level of data, 0 denotes all', type=int, default=0)
 parser.add_argument('--sampler', choices=(1, 0), help='if customer sampler?', type=int, default=1)
 parser.add_argument('--ts_level_nb', choices=(135, 235, 240), help='if customer sampler?', type=int, default=240)
-parser.add_argument('--masked_by_lung', choices=(1, 0), help='if slices are masked by lung masks', type=int, default=0)
+parser.add_argument('--masked_by_lung', choices=(1, 0), help='if slices are masked by lung masks', type=int, default=1)
 
 parser.add_argument('--loss', choices=('mse', 'mae', 'smooth_mae', 'mse+mae', 'msehigher'), help='mode', type=str,
                     default='mse')
 parser.add_argument('--pretrained', choices=(1, 0), help='pretrained or not', type=int, default=1)
-parser.add_argument('--epochs', help='total epochs', type=int, default=1)
+parser.add_argument('--epochs', help='total epochs', type=int, default=600)
 parser.add_argument('--weight_decay', help='L2 regularization', type=float, default=0.0)  # must be a float number !
 
 parser.add_argument('--outfile', help='output file when running by script instead of pycharm', type=str, default=None)

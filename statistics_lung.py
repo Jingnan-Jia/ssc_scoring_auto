@@ -35,8 +35,11 @@ ct_fpath = sorted(glob.glob(ct_dir + '/*/*' + 'MaskedByLung.mha'))
 rmin_ls, rmax_ls, cmin_ls, cmax_ls = [], [], [], []
 err_ls = []
 for i, name in enumerate(ct_fpath):
+    # if i == 422:
+    # print(i)
     ct_masked, ori, sp = load_itk(name, require_ori_sp=True)
-    # ct_masked = clip(ct_masked, -1500, 1500)
+    # ct_masked =
+    ct_masked = clip(ct_masked, -1500, 1500)
     try:
         rmin, rmax, cmin, cmax= bbox2(ct_masked)
         for ls, bb in zip([rmin_ls, rmax_ls, cmin_ls, cmax_ls], [rmin, rmax, cmin, cmax]):
@@ -47,7 +50,7 @@ for i, name in enumerate(ct_fpath):
         err_ls.append(name)
 
 
-with open('box.csv', 'a') as f:
+with open('box_clip_1500.csv', 'a') as f:
     writer = csv.writer(f)
     for a,b,c,d, f in zip(rmin_ls, rmax_ls, cmin_ls, cmax_ls, ct_fpath):
         writer.writerow([a,b,c,d, f])

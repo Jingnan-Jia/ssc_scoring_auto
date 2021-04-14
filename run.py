@@ -973,7 +973,7 @@ def train(id: int):
     log_dict['batch_size'] = batch_size
     workers = 10
     log_dict['loader_workers'] = workers
-    train_dataloader = DataLoader(tr_dataset, batch_size=batch_size, shuffle=False, num_workers=workers,
+    train_dataloader = DataLoader(tr_dataset, batch_size=batch_size, shuffle=True, num_workers=workers,
                                   sampler=sampler)
     valid_dataloader = DataLoader(vd_dataset, batch_size=batch_size, shuffle=False, num_workers=workers)
     # valid_dataloader = train_dataloader
