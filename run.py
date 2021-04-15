@@ -118,9 +118,19 @@ def get_net(name: str, nb_cls: int):
         net.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
 
     print(net)
+    net_parameters = count_parameters(net)
+    log_dict['net_parameters'] = net_parameters
 
     return net
 
+def count_parameters(model):
+    total_params = 0
+    for name, parameter in model.named_parameters():
+        if not parameter.requires_grad: continue
+        param = parameter.numel()
+        total_params += param
+    print(f"Total Trainable Params: {total_params}")
+    return total_params
 
 def load_itk(filename, require_sp_po=False):
     #     print('start load data')
@@ -519,11 +529,12 @@ def get_transform(mode=None):
     image_size = 512
     vertflip = 0.5
     horiflip = 0.5
-    shift = (10 / 512, 10 / 512)
+    shift = 10 / 512
+    scale = 0.05
     xforms = [AddChannel()]
     if mode == 'train':
         xforms.extend([
-            RandomAffine(degrees=rotation, translate=shift),
+            RandomAffine(degrees=rotation, translate=(shift, shift), scale=(1-scale, 1+scale)),
             CenterCrop(image_size),
             RandomHorizontalFlip(p=horiflip),
             RandomVerticalFlip(p=vertflip),
@@ -542,6 +553,8 @@ def get_transform(mode=None):
     log_dict['RandomShift'] = shift
     log_dict['image_size'] = image_size
     log_dict['RandGaussianNoise'] = 0.1
+    log_dict['RandScale'] = 0.05
+
 
     return transform
 
@@ -973,7 +986,7 @@ def train(id: int):
     log_dict['batch_size'] = batch_size
     workers = 10
     log_dict['loader_workers'] = workers
-    train_dataloader = DataLoader(tr_dataset, batch_size=batch_size, shuffle=True, num_workers=workers,
+    train_dataloader = DataLoader(tr_dataset, batch_size=batch_size, shuffle=False, num_workers=workers,
                                   sampler=sampler)
     valid_dataloader = DataLoader(vd_dataset, batch_size=batch_size, shuffle=False, num_workers=workers)
     # valid_dataloader = train_dataloader
@@ -1120,6 +1133,7 @@ def record_experiment(record_file: str, current_id: Optional[int] = None):
 
                 df.to_csv(record_file, index=False)
                 shutil.copy(record_file, 'cp_' + record_file)
+
                 df_lastrow = df.iloc[[-1]]
                 df_lastrow.to_csv(mypath.id_dir + '/' + record_file, index=False)  # save the record of the current ex
         return new_id
@@ -1152,7 +1166,13 @@ def record_experiment(record_file: str, current_id: Optional[int] = None):
                 lock2 = FileLock(mypath.loss(mode) + ".lock")
                 # when evaluating old mode3ls, those files would be copied to new the folder
                 with lock2:
-                    loss_df = pd.read_csv(mypath.loss(mode))
+                    try:
+                        loss_df = pd.read_csv(mypath.loss(mode))
+                    except:
+                        mypath2 = Path(args.eval_id)
+                        for mo in ['train', 'valid', 'test']:
+                            shutil.copy(mypath2.loss(mo), mypath.loss(mo))
+                        loss_df = pd.read_csv(mypath.loss(mode))
                     best_index = loss_df['mae_end5'].idxmin()
                     log_dict['metrics_min'] = 'mae_end5'
                     loss = loss_df['loss'][best_index]
@@ -1181,7 +1201,7 @@ def record_experiment(record_file: str, current_id: Optional[int] = None):
             args_dict.update({'ID': current_id})
             for column in df:
                 if column in args_dict.keys() and type(args_dict[column]) is int:
-                    print(f'convert {df[column]} to float and then to Int64')
+                    # print(f'convert {df[column]} to float and then to Int64')
                     df[column] = df[column].astype(float).astype('Int64')  # correct str to float and then int
 
             df.to_csv(record_file, index=False)
