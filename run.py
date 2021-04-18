@@ -10,10 +10,9 @@ import os
 import shutil
 import threading
 import time
-from typing import (List, Tuple, Union)
+from typing import (List, Tuple, Optional, Union, Dict)
 
 import SimpleITK as sitk
-import monai
 import numpy as np
 import nvidia_smi
 import pandas as pd
@@ -22,20 +21,21 @@ import torch.nn as nn
 # import streamlit as st
 import torchvision.models as models
 from filelock import FileLock
+from monai.transforms import ScaleIntensityRange, RandGaussianNoise
 from sklearn.model_selection import KFold
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.data import WeightedRandomSampler
 from torchvision import transforms
-from torchvision.transforms import Resize, RandomHorizontalFlip, RandomVerticalFlip, CenterCrop, RandomAffine
-from monai.transforms import NormalizeIntensity, ScaleIntensityRange, RandGaussianNoise
-import matplotlib.pyplot as plt
-from varname import nameof
-from typing import (Dict, List, Tuple, Set, Deque, NamedTuple, IO, Pattern, Match, Text,
-                    Optional, Sequence, Union, TypeVar, Iterable, Mapping, MutableMapping, Any)
+from torchvision.transforms import RandomHorizontalFlip, RandomVerticalFlip, CenterCrop, RandomAffine
+import jjnutils.util as futil
+
 import confusion
 from set_args import args
+import pingouin as pg
 
-log_dict = {}  # a global dict to store variables saved to log files
+LogType = Optional[Union[int, float, str]]  # int includes bool
+log_dict: Dict[str, LogType] = {}  # a global dict to store variables saved to log files
+
 
 
 class SmallNet(nn.Module):
@@ -67,6 +67,34 @@ class SmallNet(nn.Module):
         x = torch.flatten(x, 1)
         x = self.classifier(x)
         return x
+
+class MyNormalizeImaged:
+    def __call__(self, data: Mapping[Hashable, np.ndarray]) -> Dict[Hashable, np.ndarray]:
+        d = dict(data)
+
+        mean, std = np.mean(d['image_key']), np.std(d['image_key'])
+        d['image_key'] = d['image_key'] - mean
+        d['image_key'] = d['image_key'] / std
+        return d
+
+
+class AddChanneld:
+    def __call__(self, data: Mapping[Hashable, np.ndarray]) -> Dict[Hashable, np.ndarray]:
+        """
+        Apply the transform to `img`.
+        """
+        d = dict(data)
+        d['image_key'] = d['image_key'][None]
+        return d
+
+class RandGaussianNoised:
+    def __init__(self, *args, **kargs):
+        self.noise = RandGaussianNoise(*args, **kargs)
+
+    def __call__(self, data: Mapping[Hashable, np.ndarray]) -> Dict[Hashable, np.ndarray]:
+        d = dict(data)
+        d['image_key'] = self.noise(d['image_key'])
+        return d
 
 
 def get_net(name: str, nb_cls: int):
@@ -116,55 +144,13 @@ def get_net(name: str, nb_cls: int):
         else:
             raise Exception('Net name is not correct')
         net.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
-
+    else:
+        raise Exception("net name is wrong")
     print(net)
-    net_parameters = count_parameters(net)
+    net_parameters = futil.count_parameters(net)
     log_dict['net_parameters'] = net_parameters
 
     return net
-
-def count_parameters(model):
-    total_params = 0
-    for name, parameter in model.named_parameters():
-        if not parameter.requires_grad: continue
-        param = parameter.numel()
-        total_params += param
-    print(f"Total Trainable Params: {total_params}")
-    return total_params
-
-def load_itk(filename, require_sp_po=False):
-    #     print('start load data')
-    # Reads the image using SimpleITK
-    if os.path.isfile(filename):
-        itkimage = sitk.ReadImage(filename)
-
-    else:
-        print('nonfound:', filename)
-        return [], [], []
-
-    # Convert the image to a  numpy array first ands then shuffle the dimensions to get axis in the order z,y,x
-    ct_scan = sitk.GetArrayFromImage(itkimage)
-
-    # ct_scan[ct_scan>4] = 0 #filter trachea (label 5)
-    # Read the origin of the ct_scan, will be used to convert the coordinates from world to voxel and vice versa.
-    origin = np.array(list(reversed(itkimage.GetOrigin())))
-
-    # Read the spacing along each dimension
-    spacing = np.array(list(reversed(itkimage.GetSpacing())))
-    #     print('get_orientation', get_orientation)
-    if require_sp_po:
-        return ct_scan, origin, spacing
-    else:
-        return ct_scan
-
-
-def save_itk(filename, scan, origin, spacing, dtype='int16'):
-    stk = sitk.GetImageFromArray(scan.astype(dtype))
-    stk.SetOrigin(origin[::-1])
-    stk.SetSpacing(spacing[::-1])
-
-    writer = sitk.ImageFileWriter()
-    writer.Execute(stk, filename, True)
 
 
 def load_level_data_old(data_dir: str, label_file: str, level: int) -> Tuple[List, List]:
@@ -202,7 +188,7 @@ def load_level_data_old(data_dir: str, label_file: str, level: int) -> Tuple[Lis
     # y_gg = list(itertools.chain.from_iterable((itertools.repeat(y, 3) for y in y_gg)))
     # y_retp = list(itertools.chain.from_iterable((itertools.repeat(y, 3) for y in y_retp)))
 
-    y = [np.array([a, b, c]) for a, b, c in zip(y_disext, y_gg, y_retp)]
+    y = [np.array([a_, b_, c_]) for a_, b_, c_ in zip(y_disext, y_gg, y_retp)]
 
     assert os.path.dirname(x[0]) == os.path.dirname(x[1]) == os.path.dirname(x[2])
     assert len(x) == len(y)
@@ -214,31 +200,32 @@ def load_level_data_old(data_dir: str, label_file: str, level: int) -> Tuple[Lis
 def load_level_names_from_dir(pat_dir: str, label_file: str, levels: Union[int, List[int]]) -> Tuple[List, List]:
     """
     Load the data for the specific level.
+    :param pat_dir:
     :param label_file:
-    :param data_dir:
     :param levels:
     :return:
     """
     label_excel = pd.read_excel(label_file, engine='openpyxl')
-    if type(levels) is list:
-        x_list, y_list = [], []
-        for level in levels:
-            file_prefix = "Level" + str(level)
-            x_middle = sorted(glob.glob(os.path.join(pat_dir, file_prefix + "_middle*")))
+    if type(levels) is int:
+        levels = [levels]
+    x_list, y_list = [], []
+    for level in levels:
+        file_prefix = "Level" + str(level)
+        x_middle = sorted(glob.glob(os.path.join(pat_dir, file_prefix + "_middle*")))
 
-            # 3 labels for one level
-            y_disext = pd.DataFrame(label_excel, columns=['L' + str(level) + '_disext']).values
-            y_gg = pd.DataFrame(label_excel, columns=['L' + str(level) + '_gg']).values
-            y_retp = pd.DataFrame(label_excel, columns=['L' + str(level) + '_retp']).values
+        # 3 labels for one level
+        y_disext = pd.DataFrame(label_excel, columns=['L' + str(level) + '_disext']).values
+        y_gg = pd.DataFrame(label_excel, columns=['L' + str(level) + '_gg']).values
+        y_retp = pd.DataFrame(label_excel, columns=['L' + str(level) + '_retp']).values
 
-            y_disext = np.array(y_disext).reshape((-1,))
-            y_gg = np.array(y_gg).reshape((-1,))
-            y_retp = np.array(y_retp).reshape((-1,))
+        y_disext = np.array(y_disext).reshape((-1,))
+        y_gg = np.array(y_gg).reshape((-1,))
+        y_retp = np.array(y_retp).reshape((-1,))
 
-            y = [np.array([a, b, c]) for a, b, c in zip(y_disext, y_gg, y_retp)]
+        y = [np.array([a_, b_, c_]) for a_, b_, c_ in zip(y_disext, y_gg, y_retp)]
 
-            x_list.extend(x_middle)
-            y_list.extend(y)
+        x_list.extend(x_middle)
+        y_list.extend(y)
 
     assert len(x_list) == len(y_list)
 
@@ -315,7 +302,7 @@ def load_data_of_a_level_old(dir_pat: str, label_file: str, level: int) -> Tuple
     y_gg = list(itertools.chain.from_iterable(itertools.repeat(x, 3) for x in y_gg))
     y_retp = list(itertools.chain.from_iterable(itertools.repeat(x, 3) for x in y_retp))
 
-    y = [np.array([a, b, c]) for a, b, c in zip(y_disext, y_gg, y_retp)]
+    y = [np.array([a_, b_, c_]) for a_, b_, c_ in zip(y_disext, y_gg, y_retp)]
 
     assert os.path.dirname(x[0]) == os.path.dirname(x[1]) == os.path.dirname(x[2])
     assert len(x) == len(y)
@@ -355,7 +342,7 @@ def load_data_of_a_level(dir_pat: str, df_excel: pd.DataFrame, level: int) -> Tu
     y_gg = [y_gg, y_gg, y_gg]
     y_retp = [y_retp, y_retp, y_retp]
 
-    y = [np.array([a, b, c]) for a, b, c in zip(y_disext, y_gg, y_retp)]
+    y = [np.array([a_, b_, c_]) for a_, b_, c_ in zip(y_disext, y_gg, y_retp)]
 
     assert os.path.dirname(x[0]) == os.path.dirname(x[1]) == os.path.dirname(x[2])
     assert len(x) == len(y)
@@ -371,12 +358,6 @@ def normalize(image):
     return image
 
 
-def clip(x_np, min, max):
-    x_np[x_np > max] = max
-    x_np[x_np < min] = min
-    return x_np
-
-
 class SScScoreDataset(Dataset):
     """SSc scoring dataset."""
 
@@ -388,7 +369,7 @@ class SScScoreDataset(Dataset):
             self.data_x_names = self.data_x_names[index]
             self.data_y_list = self.data_y_list[index]
         print('loading data ...')
-        self.data_x = [load_itk(x, require_sp_po=True) for x in self.data_x_names]
+        self.data_x = [futil.load_itk(x, require_ori_sp=True) for x in self.data_x_names]
         self.data_x_np = [i[0] for i in self.data_x]
         normalize0to1 = ScaleIntensityRange(a_min=-1500.0, a_max=1500.0, b_min=0.0, b_max=1.0, clip=True)
 
@@ -423,13 +404,15 @@ class SScScoreDataset(Dataset):
         label = self.data_y_tensor[idx]
 
         check_aug_effect = 0
-        if check_aug_effect:
-            image_name = self.data_x_names[idx]
+
+        if check_aug_effect and self.transform:
+            img_fpath = self.data_x_names[idx]
             image_origin, image_spacing = self.data_x_or_sp[idx]
 
             image_origin = np.append(image_origin, 1)
             image_spacing = np.append(image_spacing, 1)
-            print(image_name)
+
+            print(img_fpath)
 
             def crop_center(img, cropx, cropy):
                 y, x = img.shape
@@ -438,20 +421,94 @@ class SScScoreDataset(Dataset):
                 return img[starty:starty + cropy, startx:startx + cropx]
 
             img_before_aug = crop_center(image.numpy(), 512, 512)
-            save_itk('aug_before_' + image_name.split('/')[-1],
+            futil.save_itk('aug_before_' + img_fpath.split('/')[-1],
                      img_before_aug, image_origin, image_spacing, dtype='float')
 
+            image = self.transform(image)
+            futil.save_itk('aug_after_' + img_fpath.split('/')[-1],
+                     image.numpy(), image_origin, image_spacing, dtype='float')
         if self.transform:
             image = self.transform(image)
-
-        if check_aug_effect:
-            save_itk('aug_after_' + image_name.split('/')[-1],
-                     image.numpy(), image_origin, image_spacing, dtype='float')
 
         return image, label
 
 
-class AddChannel():
+class SynthesisDataset(Dataset):
+    """SSc scoring dataset."""
+
+    def __init__(self, data_x_names, data_y_list, index: List = None, transform=None):
+
+        self.data_x_names, self.data_y_list = np.array(data_x_names), np.array(data_y_list)
+        lenth = len(self.data_x_names)
+        if index is not None:
+            self.data_x_names = self.data_x_names[index]
+            self.data_y_list = self.data_y_list[index]
+        print('loading data ...')
+        self.data_x = [futil.load_itk(x, require_ori_sp=True) for x in self.data_x_names]
+        self.data_x_np = [i[0] for i in self.data_x]
+        normalize0to1 = ScaleIntensityRange(a_min=-1500.0, a_max=1500.0, b_min=0.0, b_max=1.0, clip=True)
+
+        self.data_x_np = [normalize0to1(x_np) for x_np in self.data_x_np]
+        # scale data to 0~1, it's convinent for future transform during dataloader
+        self.data_x_or_sp = [[i[1], i[2]] for i in self.data_x]
+
+        # self.data_x_np = [normalize(x) for x in self.data_x_np]
+
+        # log_dict['normalize_data'] = True
+
+        self.data_x_np = [x.astype(np.float32) for x in self.data_x_np]
+        self.data_y_np = [y.astype(np.float32) for y in self.data_y_list]
+        # self.min = [np.min(x) for x in self.data_x_np]
+        self.data_x_np = [np.pad(x, pad_width=((128, 128), (128, 128)), mode='constant') for x in self.data_x_np]
+        self.data_x_tensor = [torch.as_tensor(x) for x in self.data_x_np]
+        self.data_y_tensor = [torch.as_tensor(y) for y in self.data_y_np]
+
+        # self.min_value = [torch.min(x).item() for x in self.data_x_tensor]  # min values after normalization
+        # self.data_x_tensor = [functional.pad(x, padding=[128, 128], fill=min) for x, min in zip(self.data_x_tensor, self.min_value)]
+
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.data_y_tensor)
+
+    def __getitem__(self, idx):
+        if torch.is_tensor(idx):
+            idx = idx.tolist()
+
+        image = self.data_x_tensor[idx]
+        label = self.data_y_tensor[idx]
+
+        check_aug_effect = 0
+
+        if check_aug_effect and self.transform:
+            img_fpath = self.data_x_names[idx]
+            image_origin, image_spacing = self.data_x_or_sp[idx]
+
+            image_origin = np.append(image_origin, 1)
+            image_spacing = np.append(image_spacing, 1)
+
+            print(img_fpath)
+
+            def crop_center(img, cropx, cropy):
+                y, x = img.shape
+                startx = x // 2 - (cropx // 2)
+                starty = y // 2 - (cropy // 2)
+                return img[starty:starty + cropy, startx:startx + cropx]
+
+            img_before_aug = crop_center(image.numpy(), 512, 512)
+            futil.save_itk('aug_before_' + img_fpath.split('/')[-1],
+                     img_before_aug, image_origin, image_spacing, dtype='float')
+
+            image = self.transform(image)
+            futil.save_itk('aug_after_' + img_fpath.split('/')[-1],
+                     image.numpy(), image_origin, image_spacing, dtype='float')
+        if self.transform:
+            image = self.transform(image)
+
+        return image, label
+
+
+class AddChannel:
     def __call__(self, img):
         """
         Apply the transform to `img`.
@@ -459,7 +516,7 @@ class AddChannel():
         return img[None]
 
 
-class MyNormalize():
+class MyNormalize:
     def __call__(self, image):
         mean, std = torch.mean(image), torch.std(image)
         image = image - mean
@@ -467,7 +524,7 @@ class MyNormalize():
         return image
 
 
-class Clip():
+class Clip:
     def __init__(self, min, max):
         self.min = min
         self.max = max
@@ -481,7 +538,7 @@ class Clip():
         return img
 
 
-class Path():
+class Path:
     def __init__(self, id, check_id_dir=False) -> None:
         self.id = id  # type: int
         self.slurmlog_dir = 'slurmlogs'
@@ -534,7 +591,7 @@ def get_transform(mode=None):
     xforms = [AddChannel()]
     if mode == 'train':
         xforms.extend([
-            RandomAffine(degrees=rotation, translate=(shift, shift), scale=(1-scale, 1+scale)),
+            RandomAffine(degrees=rotation, translate=(shift, shift), scale=(1 - scale, 1 + scale)),
             CenterCrop(image_size),
             RandomHorizontalFlip(p=horiflip),
             RandomVerticalFlip(p=vertflip),
@@ -554,7 +611,6 @@ def get_transform(mode=None):
     log_dict['image_size'] = image_size
     log_dict['RandGaussianNoise'] = 0.1
     log_dict['RandScale'] = 0.05
-
 
     return transform
 
@@ -590,6 +646,11 @@ def record_GPU_info():
 
 
 def appendrows_to(fpath, data):
+    if not os.path.isfile(fpath):
+        with open(fpath, 'a') as csv_file:
+            writer = csv.writer(csv_file, delimiter=',')
+            writer.writerow(['disext', 'gg', 'retp'])
+
     with open(fpath, 'a') as csv_file:
         writer = csv.writer(csv_file, delimiter=',')
         if len(data.shape) == 1:  # when data.shape==(batch_size,) in classification task
@@ -782,16 +843,52 @@ def get_column(n, tr_y):
     return column
 
 
+def icc(label_fpath, pred_fpath):
+    icc_dict = {}
+
+    label = pd.read_csv(label_fpath)
+    pred = pd.read_csv(pred_fpath)
+
+    # if len(label.columns) == 3:
+    #     columns = ['disext', 'gg', 'retp']
+    # elif len(label.columns) == 5:
+    #     columns = ['L1', 'L2', 'L3', 'L4', 'L5']
+    # else:
+    #     raise Exception('wrong task')
+
+    # label.columns = columns
+    # pred.columns = columns
+
+    label['ID'] = np.arange(1, len(label) + 1)
+    label['rater'] = 'label'
+
+    pred['ID'] = np.arange(1, len(pred) + 1)
+    pred['rater'] = 'pred'
+
+    data = pd.concat([label, pred], axis=0)
+
+    for column in label.columns:
+        icc = pg.intraclass_corr(data=data, targets='ID', raters='rater', ratings=column).round(2)
+        icc = icc.set_index("Type")
+        icc = icc.loc['ICC2']['ICC']
+        prefix = label_fpath.split("/")[-1].split("_")[0]
+        icc_dict[prefix + '_' + column] = icc
+
+    return icc_dict
+
+
+
 def split_ts_data_by_levels(data_dir, label_file):
     level_x, level_y = load_level_names_from_dir(data_dir, label_file,
                                                  levels=[1, 2, 3, 4, 5])  # level names and level labels
-    if args.ts_level_nb == 135:
-        test_count = {0: 56, 5: 12, 10: 9, 15: 6, 20: 6, 25: 6, 30: 6, 35: 4, 40: 5, 45: 3, 50: 4, 55: 3, 60: 3, 65: 2,
-                      70: 2, 75: 1, 80: 2, 85: 1, 90: 2, 95: 0, 100: 2}
-    elif args.ts_level_nb == 235:
+
+    if args.ts_level_nb == 235:
         test_count = {0: 114, 5: 24, 10: 18, 15: 9, 20: 12, 25: 9, 30: 9, 35: 6, 40: 8, 45: 3, 50: 7, 55: 3, 60: 3,
                       65: 2, 70: 2, 75: 1, 80: 1, 85: 1, 90: 2, 95: 0, 100: 1}
-    assert args.ts_level_nb == sum(test_count.values())
+        assert args.ts_level_nb == sum(test_count.values())
+    else:
+        raise Exception('ts_level_nb should be 235')
+
 
     tr_vd_x, tr_vd_y, test_x, test_y = [], [], [], []
     for x, y in zip(level_x, level_y):
@@ -843,28 +940,30 @@ def prepare_data(mypath):
         tr_x, tr_y = load_data_of_pats(tr_pt, label_file)
         vd_x, vd_y = load_data_of_pats(vd_pt, label_file)
         ts_x, ts_y = load_data_of_pats(ts_pt, label_file)
-
     else:
-        tr_vd_level_names, tr_vd_level_y, test_level_names, test_level_y = split_ts_data_by_levels(data_dir, label_file)
+        raise Exception('ts_level_nb is not correct')
 
-        kf_list = list(kf5.split(tr_vd_level_names))
-        tr_level_idx, vd_level_idx = kf_list[args.fold - 1]
-
-        log_dict['train_level_nb'] = len(tr_level_idx)
-        log_dict['valid_level_nb'] = len(vd_level_idx)
-        log_dict['test_level_nb'] = len(test_level_names)
-
-        log_dict['train_index_head'] = tr_level_idx[:20]
-        log_dict['valid_index_head'] = vd_level_idx[:20]
-
-        tr_level_names = tr_vd_level_names[tr_level_idx]
-        tr_level_y = tr_vd_level_y[tr_level_idx]
-        vd_level_names = tr_vd_level_names[vd_level_idx]
-        vd_level_y = tr_vd_level_y[vd_level_idx]
-
-        tr_x, tr_y = load_data_of_levels(tr_level_names, tr_level_y)
-        vd_x, vd_y = load_data_of_levels(vd_level_names, vd_level_y)
-        ts_x, ts_y = load_data_of_levels(test_level_names, test_level_y)
+    # else:
+    #     tr_vd_level_names, tr_vd_level_y, test_level_names, test_level_y = split_ts_data_by_levels(data_dir, label_file)
+    #
+    #     kf_list = list(kf5.split(tr_vd_level_names))
+    #     tr_level_idx, vd_level_idx = kf_list[args.fold - 1]
+    #
+    #     log_dict['train_level_nb'] = len(tr_level_idx)
+    #     log_dict['valid_level_nb'] = len(vd_level_idx)
+    #     log_dict['test_level_nb'] = len(test_level_names)
+    #
+    #     log_dict['train_index_head'] = tr_level_idx[:20]
+    #     log_dict['valid_index_head'] = vd_level_idx[:20]
+    #
+    #     tr_level_names = tr_vd_level_names[tr_level_idx]
+    #     tr_level_y = tr_vd_level_y[tr_level_idx]
+    #     vd_level_names = tr_vd_level_names[vd_level_idx]
+    #     vd_level_y = tr_vd_level_y[vd_level_idx]
+    #
+    #     tr_x, tr_y = load_data_of_levels(tr_level_names, tr_level_y)
+    #     vd_x, vd_y = load_data_of_levels(vd_level_names, vd_level_y)
+    #     ts_x, ts_y = load_data_of_levels(test_level_names, test_level_y)
 
     for x, y, mode in zip([tr_x, vd_x, ts_x], [tr_y, vd_y, ts_y], ['train', 'valid', 'test']):
         save_xy(x, y, mode, mypath)
@@ -952,8 +1051,8 @@ def get_loss(args):
     return loss_fun
 
 
-def train(id: int):
-    mypath = Path(id)
+def train(id_: int):
+    mypath = Path(id_)
 
     if torch.cuda.is_available():
         device = torch.device("cuda")
@@ -971,16 +1070,24 @@ def train(id: int):
             tr_y, vd_y, ts_y = get_column(0, tr_y), get_column(0, vd_y), get_column(0, ts_y)
         elif args.cls == "gg":
             tr_y, vd_y, ts_y = get_column(1, tr_y), get_column(1, vd_y), get_column(1, ts_y)
-        elif args.cls == "rept":
+        elif args.cls == "retp":
             tr_y, vd_y, ts_y = get_column(2, tr_y), get_column(2, vd_y), get_column(2, ts_y)
         else:
             raise Exception("Wrong args.cls: ", args.cls)
 
-    sampler = sampler_by_disext(tr_y) if args.sampler else None
+    if args.synthesis_data and (not args.sampler):
+        tr_dataset = SynthesisDataset(tr_x, tr_y, transform=get_transform('train'))
+        vd_dataset = SynthesisDataset(vd_x, vd_y, transform=get_transform())
+        ts_dataset = SynthesisDataset(ts_x, ts_y, transform=get_transform())
+        sampler = None
+    elif (not args.synthesis_data) and args.sampler:
+        tr_dataset = SScScoreDataset(tr_x, tr_y, transform=get_transform('train'))
+        vd_dataset = SScScoreDataset(vd_x, vd_y, transform=get_transform())
+        ts_dataset = SScScoreDataset(ts_x, ts_y, transform=get_transform())
+        sampler = sampler_by_disext(tr_y)
 
-    tr_dataset = SScScoreDataset(tr_x, tr_y, transform=get_transform('train'))
-    vd_dataset = SScScoreDataset(vd_x, vd_y, transform=get_transform())
-    ts_dataset = SScScoreDataset(ts_x, ts_y, transform=get_transform())
+    else:
+        raise Exception("synthesis_data can not be set with sampler !")
 
     batch_size = 10
     log_dict['batch_size'] = batch_size
@@ -1026,6 +1133,8 @@ def train(id: int):
     for mode in ['train', 'valid', 'test']:
         out_dt = confusion.confusion(mypath.label(mode), mypath.pred_end5(mode))
         log_dict.update(out_dt)
+        icc_ = icc(mypath.label(mode), mypath.pred_end5(mode))
+        log_dict.update(icc_)
 
 
 def record_best_preds(net, train_dataloader, valid_dataloader, test_dataloader, mypath, device, amp):
@@ -1219,6 +1328,7 @@ def check_time_difference(t1: datetime, t2: datetime):
 
 
 if __name__ == "__main__":
+
     record_file = 'records.csv'
     id = record_experiment(record_file)
     train(id)
