@@ -7,6 +7,7 @@ import datetime
 import glob
 import itertools
 import os
+import random
 import shutil
 import threading
 import time
@@ -32,15 +33,16 @@ import jjnutils.util as futil
 import confusion
 from set_args import args
 import pingouin as pg
+import random
+
 
 LogType = Optional[Union[int, float, str]]  # int includes bool
 log_dict: Dict[str, LogType] = {}  # a global dict to store variables saved to log files
 
 
-
 class SmallNet(nn.Module):
     def __init__(self, num_classes=1000):
-        super(SmallNet, self).__init__()
+        super().__init__()
         self.features = nn.Sequential(
             nn.Conv2d(1, 64, kernel_size=11, stride=4, padding=2),
             nn.ReLU(inplace=True),
@@ -68,33 +70,74 @@ class SmallNet(nn.Module):
         x = self.classifier(x)
         return x
 
-class MyNormalizeImaged:
-    def __call__(self, data: Mapping[Hashable, np.ndarray]) -> Dict[Hashable, np.ndarray]:
-        d = dict(data)
-
-        mean, std = np.mean(d['image_key']), np.std(d['image_key'])
-        d['image_key'] = d['image_key'] - mean
-        d['image_key'] = d['image_key'] / std
-        return d
 
 
-class AddChanneld:
-    def __call__(self, data: Mapping[Hashable, np.ndarray]) -> Dict[Hashable, np.ndarray]:
-        """
-        Apply the transform to `img`.
-        """
-        d = dict(data)
-        d['image_key'] = d['image_key'][None]
-        return d
+class Cnn2fc1(nn.Module):
+    def __init__(self, num_classes=1000):
+        super().__init__()
+        self.features = nn.Sequential(
+            nn.Conv2d(1, 64, kernel_size=11, stride=4, padding=2),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=3, stride=2),
+            nn.Conv2d(64, 128, kernel_size=5, padding=2),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=3, stride=2),
+        )
+        self.avgpool = nn.AdaptiveAvgPool2d((6, 6))
+        self.classifier = nn.Sequential(
+            nn.Dropout(),
+            nn.Linear(128 * 6 * 6, 32),
+            nn.ReLU(inplace=True),
+            nn.Dropout(),
+            nn.Linear(32, num_classes),
+        )
 
-class RandGaussianNoised:
-    def __init__(self, *args, **kargs):
-        self.noise = RandGaussianNoise(*args, **kargs)
+    def forward(self, x):
+        x = self.features(x)
+        x = self.avgpool(x)
+        x = torch.flatten(x, 1)
+        x = self.classifier(x)
+        return x
 
-    def __call__(self, data: Mapping[Hashable, np.ndarray]) -> Dict[Hashable, np.ndarray]:
-        d = dict(data)
-        d['image_key'] = self.noise(d['image_key'])
-        return d
+
+
+class ReconNet(nn.Module):
+
+    def __init__(self, num_classes=1000):
+        super().__init__()
+        self.features = nn.Sequential(
+            nn.Conv2d(3, 64, kernel_size=11, stride=4, padding=2),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=3, stride=2),
+            nn.Conv2d(64, 192, kernel_size=5, padding=2),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=3, stride=2),
+            nn.Conv2d(192, 384, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(384, 256, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(256, 256, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=3, stride=2),
+        )
+        self.avgpool = nn.AdaptiveAvgPool2d((6, 6))
+        self.classifier = nn.Sequential(
+            nn.Dropout(),
+            nn.Linear(256 * 6 * 6, 4096),
+            nn.ReLU(inplace=True),
+            nn.Dropout(),
+            nn.Linear(4096, 4096),
+            nn.ReLU(inplace=True),
+            nn.Linear(4096, num_classes),
+        )
+
+    def forward(self, x):
+        x = self.features(x)
+        x = self.avgpool(x)
+        x = torch.flatten(x, 1)
+        x = self.classifier(x)
+        return x
+
 
 
 def get_net(name: str, nb_cls: int):
@@ -119,6 +162,8 @@ def get_net(name: str, nb_cls: int):
         net.classifier[6] = torch.nn.Linear(in_features=args.fc2_nodes, out_features=3)
     elif name == 'conv3fc1':
         net = SmallNet(num_classes=3)
+    elif name == 'cnn2fc1':
+        net = Cnn2fc1(num_classes=3)
     elif name == 'squeezenet':
         net = models.squeezenet1_0()
     elif name == 'densenet161':
@@ -422,11 +467,11 @@ class SScScoreDataset(Dataset):
 
             img_before_aug = crop_center(image.numpy(), 512, 512)
             futil.save_itk('aug_before_' + img_fpath.split('/')[-1],
-                     img_before_aug, image_origin, image_spacing, dtype='float')
+                           img_before_aug, image_origin, image_spacing, dtype='float')
 
             image = self.transform(image)
             futil.save_itk('aug_after_' + img_fpath.split('/')[-1],
-                     image.numpy(), image_origin, image_spacing, dtype='float')
+                           image.numpy(), image_origin, image_spacing, dtype='float')
         if self.transform:
             image = self.transform(image)
 
@@ -439,7 +484,6 @@ class SynthesisDataset(Dataset):
     def __init__(self, data_x_names, data_y_list, index: List = None, transform=None):
 
         self.data_x_names, self.data_y_list = np.array(data_x_names), np.array(data_y_list)
-        lenth = len(self.data_x_names)
         if index is not None:
             self.data_x_names = self.data_x_names[index]
             self.data_y_list = self.data_y_list[index]
@@ -451,6 +495,8 @@ class SynthesisDataset(Dataset):
         self.data_x_np = [normalize0to1(x_np) for x_np in self.data_x_np]
         # scale data to 0~1, it's convinent for future transform during dataloader
         self.data_x_or_sp = [[i[1], i[2]] for i in self.data_x]
+        self.ori = np.array([i[1] for i in self.data_x])  # shape order: z, y, x
+        self.sp = np.array([i[2] for i in self.data_x])  # shape order: z, y, x
 
         # self.data_x_np = [normalize(x) for x in self.data_x_np]
 
@@ -469,59 +515,107 @@ class SynthesisDataset(Dataset):
         self.transform = transform
 
     def __len__(self):
-        return len(self.data_y_tensor)
+        return len(self.data_y_np)
 
     def __getitem__(self, idx):
         if torch.is_tensor(idx):
             idx = idx.tolist()
 
-        image = self.data_x_tensor[idx]
-        label = self.data_y_tensor[idx]
+        data = {'image_key': self.data_x_tensor[idx],
+                'label_key': self.data_y_tensor[idx],
+                'space_key': self.sp[idx],
+                'origin_key': self.ori[idx],
+                'fpath_key': self.data_x_names[idx]}
 
-        check_aug_effect = 0
-
-        if check_aug_effect and self.transform:
-            img_fpath = self.data_x_names[idx]
-            image_origin, image_spacing = self.data_x_or_sp[idx]
-
-            image_origin = np.append(image_origin, 1)
-            image_spacing = np.append(image_spacing, 1)
-
-            print(img_fpath)
-
-            def crop_center(img, cropx, cropy):
-                y, x = img.shape
-                startx = x // 2 - (cropx // 2)
-                starty = y // 2 - (cropy // 2)
-                return img[starty:starty + cropy, startx:startx + cropx]
-
-            img_before_aug = crop_center(image.numpy(), 512, 512)
-            futil.save_itk('aug_before_' + img_fpath.split('/')[-1],
-                     img_before_aug, image_origin, image_spacing, dtype='float')
-
-            image = self.transform(image)
-            futil.save_itk('aug_after_' + img_fpath.split('/')[-1],
-                     image.numpy(), image_origin, image_spacing, dtype='float')
         if self.transform:
-            image = self.transform(image)
+            data = self.transform(data)
+        # data['image_key'] = torch.as_tensor(data['image_key'])
+        # data['label_key'] = torch.as_tensor(data['label_key'])
 
-        return image, label
+        return data
 
 
-class AddChannel:
-    def __call__(self, img):
-        """
-        Apply the transform to `img`.
-        """
-        return img[None]
+
+
+class Synthesisd:
+    def __init__(self):
+        self.elipse_upper_nb = 3
+        self.gg_sample_fpath = None
+        self.retp_sample_fpath =None
+        self.gg_sample = futil.load_itk(self.gg_sample_fpath)
+        self.retp_sample = futil.load_itk(self.retp_sample_fpath)
+
+
+    def __call__(self, data):
+        d = dict(data)
+
+        self.img = d['image_key']
+        self.y = d['label_key']
+        gg_synthesis = self.synthesis_data(self.img, fill = self.gg_sample)
+        retp_synthesis = self.synthesis_data(self.img, fill = self.retp_sample)
+
+    def synthesis_data(self, img, fill = None):
+        self.elipse_nb = random.randint(1, self.elipse_upper_nb)  # 1,2,or 3
+        for i in range(self.elipse_nb):
+            coordi_x = random.randint(0, self.img.shape[0])
+            coordi_y = random.randint(0, self.img.shape[0])
+
+
 
 
 class MyNormalize:
+    def __call__(self, img):
+        if type(img) == np.ndarray:
+            mean, std = np.mean(img), np.std(img)
+        elif type(img) == torch.Tensor:
+            mean, std = torch.mean(img), torch.std(img)
+        img = img - mean
+        img = img / std
+        return img
+
+
+
+class MyNormalized(MyNormalize):
+    def __init__(self, *args, **kargs):
+        super().__init__(*args, **kargs)
+
+    def __call__(self, data):
+        d = dict(data)
+        d['image_key'] = super().__call__(d['image_key'])
+        return d
+
+
+class AddChannel:
     def __call__(self, image):
-        mean, std = torch.mean(image), torch.std(image)
-        image = image - mean
-        image = image / std
+        """
+        Apply the transform to `img`.
+        """
+        if type(image) == np.ndarray:
+            image = image[None]
+        elif type(image) == torch.Tensor:
+            image = image.unsqueeze(0)
+
         return image
+
+
+class AddChanneld(AddChannel):
+    def __init__(self, *args, **kargs):
+        super().__init__(*args, **kargs)
+
+    def __call__(self, data):
+        d = dict(data)
+        d['image_key'] = super().__call__(d['image_key'])
+        return d
+
+
+class RandGaussianNoised(RandGaussianNoise):
+    def __init__(self, *args, **kargs):
+        super().__init__(*args, **kargs)
+
+    def __call__(self, data):
+        d = dict(data)
+        d['image_key'] = super().__call__(d['image_key'])
+        return d
 
 
 class Clip:
@@ -533,9 +627,20 @@ class Clip:
         """
         Apply the transform to `img`.
         """
+
         img[img < self.min] = self.min
         img[img > self.max] = self.max
         return img
+
+
+class Clipd(Clip):
+    def __init__(self, *args, **kargs):
+        super().__init__(*args, **kargs)
+
+    def __call__(self, data):
+        d = dict(data)
+        d['image_key'] = super().__call__(d['image_key'])
+        return d
 
 
 class Path:
@@ -576,6 +681,47 @@ class Path:
         return os.path.join(self.id_dir, mode + '_data.csv')
 
 
+class RandomAffined(RandomAffine):
+    def __init__(self, *args, **kargs):
+        super().__init__(*args, **kargs)
+
+    def __call__(self, data):
+        d = dict(data)
+        img = d['image_key']
+        d['image_key'] = super().forward(img)
+        return d
+
+
+class CenterCropd(CenterCrop):
+    def __init__(self, *args, **kargs):
+        super().__init__(*args, **kargs)
+
+    def __call__(self, data):
+        d = dict(data)
+        d['image_key'] = super().__call__(d['image_key'])
+        return d
+
+
+class RandomHorizontalFlipd(RandomHorizontalFlip):
+    def __init__(self, *args, **kargs):
+        super().__init__(*args, **kargs)
+
+    def __call__(self, data):
+        d = dict(data)
+        d['image_key'] = super().__call__(d['image_key'])
+        return d
+
+
+class RandomVerticalFlipd(RandomVerticalFlip):
+    def __init__(self, *args, **kargs):
+        super().__init__(*args, **kargs)
+
+    def __call__(self, data):
+        d = dict(data)
+        d['image_key'] = super().__call__(d['image_key'])
+        return d
+
+
 def get_transform(mode=None):
     """
     The input image data is from 0 to 1.
@@ -591,7 +737,7 @@ def get_transform(mode=None):
     xforms = [AddChannel()]
     if mode == 'train':
         xforms.extend([
-            RandomAffine(degrees=rotation, translate=(shift, shift), scale=(1 - scale, 1 + scale)),
+            RandomAffine(degrees=rotation, translate=(shift, shift), scale=(1 - scale, 1 + scale), fillcolor=0),
             CenterCrop(image_size),
             RandomHorizontalFlip(p=horiflip),
             RandomVerticalFlip(p=vertflip),
@@ -601,6 +747,45 @@ def get_transform(mode=None):
         xforms.append(CenterCrop(image_size))
 
     xforms.append(MyNormalize())
+
+    transform = transforms.Compose(xforms)
+    global log_dict
+    log_dict['RandomVerticalFlip'] = vertflip
+    log_dict['RandomHorizontalFlip'] = horiflip
+    log_dict['RandomRotation'] = rotation
+    log_dict['RandomShift'] = shift
+    log_dict['image_size'] = image_size
+    log_dict['RandGaussianNoise'] = 0.1
+    log_dict['RandScale'] = 0.05
+
+    return transform
+
+
+def get_transformd(mode=None):
+    """
+    The input image data is from 0 to 1.
+    :param mode:
+    :return:
+    """
+    rotation = 90
+    image_size = 512
+    vertflip = 0.5
+    horiflip = 0.5
+    shift = 10 / 512
+    scale = 0.05
+    xforms = [AddChanneld()]
+    if mode == 'train':
+        xforms.extend([
+            RandomAffined(degrees=rotation, translate=(shift, shift), scale=(1 - scale, 1 + scale)),
+            CenterCropd(image_size),
+            RandomHorizontalFlipd(p=horiflip),
+            RandomVerticalFlipd(p=vertflip),
+            RandGaussianNoised()
+        ])
+    else:
+        xforms.append(CenterCropd(image_size))
+
+    xforms.append(MyNormalized())
 
     transform = transforms.Compose(xforms)
     global log_dict
@@ -645,11 +830,11 @@ def record_GPU_info():
     return None
 
 
-def appendrows_to(fpath, data):
+def appendrows_to(fpath, data, head: list =None):
     if not os.path.isfile(fpath):
         with open(fpath, 'a') as csv_file:
             writer = csv.writer(csv_file, delimiter=',')
-            writer.writerow(['disext', 'gg', 'retp'])
+            writer.writerow(head)
 
     with open(fpath, 'a') as csv_file:
         writer = csv.writer(csv_file, delimiter=',')
@@ -740,7 +925,9 @@ def start_run(mode, net, dataloader, amp, epochs, device, loss_fun, loss_fun_mae
     total_loss = 0
     total_loss_mae = 0
     total_loss_mae_end5 = 0
-    for batch_x, batch_y in dataloader:
+    for data in dataloader:
+
+        batch_x, batch_y = data['image_key'], data['label_key']
 
         batch_x = batch_x.to(device)
         batch_y = batch_y.to(device)
@@ -806,8 +993,13 @@ def start_run(mode, net, dataloader, amp, epochs, device, loss_fun, loss_fun_mae
         total_loss_mae_end5 += loss_mae_end5.item()
         batch_idx += 1
 
-        p1 = threading.Thread(target=record_GPU_info)
-        p1.start()
+        if epoch_idx == 1:
+            try:
+                p1 = threading.Thread(target=record_GPU_info)
+                p1.start()
+            except RuntimeError as e:
+                print(e)
+
 
     ave_loss = total_loss / batch_idx
     ave_loss_mae = total_loss_mae / batch_idx
@@ -848,17 +1040,20 @@ def icc(label_fpath, pred_fpath):
 
     label = pd.read_csv(label_fpath)
     pred = pd.read_csv(pred_fpath)
+    if label.columns[0] not in ['L1_pos','L1', 'disext']:
+        label = pd.read_csv(label_fpath, header=None)
+        pred = pd.read_csv(pred_fpath, header=None)
 
-    # if len(label.columns) == 3:
-    #     columns = ['disext', 'gg', 'retp']
-    # elif len(label.columns) == 5:
-    #     columns = ['L1', 'L2', 'L3', 'L4', 'L5']
-    # else:
-    #     raise Exception('wrong task')
+        if len(label.columns) == 5:
+            columns = ['L1', 'L2', 'L3', 'L4', 'L5']
+        else:
+            columns = ['disext', 'gg', 'retp']
+        label.columns = columns
+        pred.columns = columns
 
-    # label.columns = columns
-    # pred.columns = columns
-
+    label.astype(float)
+    pred.astype(float)
+    original_columns = label.columns
     label['ID'] = np.arange(1, len(label) + 1)
     label['rater'] = 'label'
 
@@ -867,15 +1062,14 @@ def icc(label_fpath, pred_fpath):
 
     data = pd.concat([label, pred], axis=0)
 
-    for column in label.columns:
+    for column in original_columns:
         icc = pg.intraclass_corr(data=data, targets='ID', raters='rater', ratings=column).round(2)
         icc = icc.set_index("Type")
         icc = icc.loc['ICC2']['ICC']
         prefix = label_fpath.split("/")[-1].split("_")[0]
-        icc_dict[prefix + '_' + column] = icc
+        icc_dict['icc_' + prefix + '_' + column] = icc
 
     return icc_dict
-
 
 
 def split_ts_data_by_levels(data_dir, label_file):
@@ -888,7 +1082,6 @@ def split_ts_data_by_levels(data_dir, label_file):
         assert args.ts_level_nb == sum(test_count.values())
     else:
         raise Exception('ts_level_nb should be 235')
-
 
     tr_vd_x, tr_vd_y, test_x, test_y = [], [], [], []
     for x, y in zip(level_x, level_y):
@@ -1053,87 +1246,98 @@ def get_loss(args):
 
 def train(id_: int):
     mypath = Path(id_)
-
-    if torch.cuda.is_available():
-        device = torch.device("cuda")
-        amp = True
-    else:
-        device = torch.device("cpu")
-        amp = False
-    log_dict['amp'] = amp
-
-    net = get_net(args.net, 3) if args.r_c == "r" else get_net(args.net, 21)
-    tr_x, tr_y, vd_x, vd_y, ts_x, ts_y = prepare_data(mypath)
-
-    if args.r_c == "c":  # classification target
-        if args.cls == "disext":
-            tr_y, vd_y, ts_y = get_column(0, tr_y), get_column(0, vd_y), get_column(0, ts_y)
-        elif args.cls == "gg":
-            tr_y, vd_y, ts_y = get_column(1, tr_y), get_column(1, vd_y), get_column(1, ts_y)
-        elif args.cls == "retp":
-            tr_y, vd_y, ts_y = get_column(2, tr_y), get_column(2, vd_y), get_column(2, ts_y)
+    if args.eval_id != 0 or args.mode == 'train':
+        if torch.cuda.is_available():
+            device = torch.device("cuda")
+            amp = True
         else:
-            raise Exception("Wrong args.cls: ", args.cls)
+            device = torch.device("cpu")
+            amp = False
+        log_dict['amp'] = amp
 
-    if args.synthesis_data and (not args.sampler):
-        tr_dataset = SynthesisDataset(tr_x, tr_y, transform=get_transform('train'))
-        vd_dataset = SynthesisDataset(vd_x, vd_y, transform=get_transform())
-        ts_dataset = SynthesisDataset(ts_x, ts_y, transform=get_transform())
-        sampler = None
-    elif (not args.synthesis_data) and args.sampler:
-        tr_dataset = SScScoreDataset(tr_x, tr_y, transform=get_transform('train'))
-        vd_dataset = SScScoreDataset(vd_x, vd_y, transform=get_transform())
-        ts_dataset = SScScoreDataset(ts_x, ts_y, transform=get_transform())
-        sampler = sampler_by_disext(tr_y)
+        net = get_net(args.net, 3) if args.r_c == "r" else get_net(args.net, 21)
+        tr_x, tr_y, vd_x, vd_y, ts_x, ts_y = prepare_data(mypath)
 
-    else:
-        raise Exception("synthesis_data can not be set with sampler !")
+        if args.r_c == "c":  # classification target
+            if args.cls == "disext":
+                tr_y, vd_y, ts_y = get_column(0, tr_y), get_column(0, vd_y), get_column(0, ts_y)
+            elif args.cls == "gg":
+                tr_y, vd_y, ts_y = get_column(1, tr_y), get_column(1, vd_y), get_column(1, ts_y)
+            elif args.cls == "retp":
+                tr_y, vd_y, ts_y = get_column(2, tr_y), get_column(2, vd_y), get_column(2, ts_y)
+            else:
+                raise Exception("Wrong args.cls: ", args.cls)
 
-    batch_size = 10
-    log_dict['batch_size'] = batch_size
-    workers = 10
-    log_dict['loader_workers'] = workers
-    train_dataloader = DataLoader(tr_dataset, batch_size=batch_size, shuffle=False, num_workers=workers,
-                                  sampler=sampler)
-    valid_dataloader = DataLoader(vd_dataset, batch_size=batch_size, shuffle=False, num_workers=workers)
-    # valid_dataloader = train_dataloader
-    test_dataloader = DataLoader(ts_dataset, batch_size=batch_size, shuffle=False, num_workers=workers)
+        if args.synthesis_data and (not args.sampler):
+            tr_dataset = SynthesisDataset(tr_x, tr_y, transform=get_transformd('train'))
+            vd_dataset = SynthesisDataset(vd_x, vd_y, transform=get_transformd())
+            ts_dataset = SynthesisDataset(ts_x, ts_y, transform=get_transformd())
+            sampler = None
+        elif (not args.synthesis_data) and args.sampler:
+            tr_dataset = SScScoreDataset(tr_x, tr_y, transform=get_transform('train'))
+            vd_dataset = SScScoreDataset(vd_x, vd_y, transform=get_transform())
+            ts_dataset = SScScoreDataset(ts_x, ts_y, transform=get_transform())
+            sampler = sampler_by_disext(tr_y)
 
-    net = net.to(device)
-    if args.eval_id:
-        mypath2 = Path(args.eval_id)
-        shutil.copy(mypath2.model_fpath, mypath.model_fpath)  # make sure there is at least one model there
-        for mo in ['train', 'valid', 'test']:
-            shutil.copy(mypath2.loss(mo), mypath.loss(mo))  # make sure there is at least one model there
+        else:
+            raise Exception("synthesis_data can not be set with sampler !")
 
-        net.load_state_dict(torch.load(mypath.model_fpath, map_location=device))
-        valid_mae_best = get_mae_best(mypath2.loss('valid'))
-        print(f'load model from {mypath2.model_fpath}, valid_mae_best is {valid_mae_best}')
-    else:
-        valid_mae_best = 10000
+        batch_size = 10
+        log_dict['batch_size'] = batch_size
+        workers = 10
+        log_dict['loader_workers'] = workers
+        train_dataloader = DataLoader(tr_dataset, batch_size=batch_size, shuffle=False, num_workers=workers,
+                                      sampler=sampler)
+        valid_dataloader = DataLoader(vd_dataset, batch_size=batch_size, shuffle=False, num_workers=workers)
+        # valid_dataloader = train_dataloader
+        test_dataloader = DataLoader(ts_dataset, batch_size=batch_size, shuffle=False, num_workers=workers)
 
-    loss_fun = get_loss(args)
-    loss_fun_mae = nn.L1Loss()
-    lr = 1e-4
-    log_dict['lr'] = lr
-    opt = torch.optim.Adam(net.parameters(), lr=lr, weight_decay=args.weight_decay)
+        net = net.to(device)
+        if args.eval_id:
+            mypath2 = Path(args.eval_id)
+            shutil.copy(mypath2.model_fpath, mypath.model_fpath)  # make sure there is at least one model there
+            for mo in ['train', 'valid', 'test']:
+                shutil.copy(mypath2.loss(mo), mypath.loss(mo))  # make sure there is at least one model there
 
-    scaler = torch.cuda.amp.GradScaler() if amp else None
-    epochs = 1 if args.mode == 'infer' else args.epochs
-    for i in range(epochs):  # 20000 epochs
-        if args.mode in ['train', 'continue_train']:
-            start_run('train', net, train_dataloader, amp, epochs, device, loss_fun, loss_fun_mae, opt, scaler, mypath,
-                      i)
-        # run the validation
-        valid_mae_best = start_run('valid', net, valid_dataloader, amp, epochs, device, loss_fun, loss_fun_mae, opt,
-                                   scaler, mypath, i, valid_mae_best)
-        start_run('test', net, test_dataloader, amp, epochs, device, loss_fun, loss_fun_mae, opt, scaler, mypath, i)
+            net.load_state_dict(torch.load(mypath.model_fpath, map_location=device))
+            valid_mae_best = get_mae_best(mypath2.loss('valid'))
+            print(f'load model from {mypath2.model_fpath}, valid_mae_best is {valid_mae_best}')
+        else:
+            valid_mae_best = 10000
 
-    record_best_preds(net, train_dataloader, valid_dataloader, test_dataloader, mypath, device, amp)
+        loss_fun = get_loss(args)
+        loss_fun_mae = nn.L1Loss()
+        lr = 1e-4
+        log_dict['lr'] = lr
+        opt = torch.optim.Adam(net.parameters(), lr=lr, weight_decay=args.weight_decay)
+
+        scaler = torch.cuda.amp.GradScaler() if amp else None
+        epochs = 1 if args.mode == 'infer' else args.epochs
+        for i in range(epochs):  # 20000 epochs
+            if args.mode in ['train', 'continue_train']:
+                start_run('train', net, train_dataloader, amp, epochs, device, loss_fun, loss_fun_mae, opt, scaler, mypath,
+                          i)
+            # run the validation
+            valid_mae_best = start_run('valid', net, valid_dataloader, amp, epochs, device, loss_fun, loss_fun_mae, opt,
+                                       scaler, mypath, i, valid_mae_best)
+            start_run('test', net, test_dataloader, amp, epochs, device, loss_fun, loss_fun_mae, opt, scaler, mypath, i)
+
+        record_best_preds(net, train_dataloader, valid_dataloader, test_dataloader, mypath, device, amp)
     for mode in ['train', 'valid', 'test']:
+        if args.eval_id:
+            mypath2 = Path(args.eval_id)
+            for mo in ['train', 'valid', 'test']:
+                shutil.copy(mypath2.data(mo), mypath.data(mo))  # make sure there is at least one model there
+                shutil.copy(mypath2.label(mo), mypath.label(mo))  # make sure there is at least one model there
+                shutil.copy(mypath2.loss(mo), mypath.loss(mo))  # make sure there is at least one model there
+                shutil.copy(mypath2.pred(mo), mypath.pred(mo))  # make sure there is at least one model there
+                shutil.copy(mypath2.pred_int(mo), mypath.pred_int(mo))  # make sure there is at least one model there
+                shutil.copy(mypath2.pred_end5(mo), mypath.pred_end5(mo))  # make sure there is at least one model there
+
         out_dt = confusion.confusion(mypath.label(mode), mypath.pred_end5(mode))
         log_dict.update(out_dt)
         icc_ = icc(mypath.label(mode), mypath.pred_end5(mode))
+        log_dict.update(icc_)
         log_dict.update(icc_)
 
 
@@ -1143,7 +1347,8 @@ def record_best_preds(net, train_dataloader, valid_dataloader, test_dataloader, 
 
     for mode, dataloader in dataloader_dict.items():
         print("Start write pred to disk for ", mode)
-        for batch_x, batch_y in dataloader:
+        for data in dataloader:
+            batch_x, batch_y = data['image_key'], data['label_key']
             batch_x = batch_x.to(device)
             batch_y = batch_y.to(device)
             if args.r_c == "c":
@@ -1177,10 +1382,11 @@ def record_preds(mode, batch_y, pred, mypath):
     batch_preds_end5 = round_to_5(batch_preds_int)
     batch_preds_end5 = batch_preds_end5.astype('Int64')
 
-    appendrows_to(mypath.label(mode), batch_label)
-    appendrows_to(mypath.pred(mode), batch_preds)
-    appendrows_to(mypath.pred_int(mode), batch_preds_int)
-    appendrows_to(mypath.pred_end5(mode), batch_preds_end5)
+    head = ['disext', 'gg', 'retp']
+    appendrows_to(mypath.label(mode), batch_label, head=head)
+    appendrows_to(mypath.pred(mode), batch_preds, head=head)
+    appendrows_to(mypath.pred_int(mode), batch_preds_int, head=head)
+    appendrows_to(mypath.pred_end5(mode), batch_preds_end5, head=head)
 
 
 def fill_running(df: pd.DataFrame):
@@ -1235,7 +1441,13 @@ def record_experiment(record_file: str, current_id: Optional[int] = None):
                     df = pd.DataFrame([idatime])  # need a [] , or need to assign the index for df
                 else:
                     for key, value in idatime.items():
-                        df.at[new_id - 1, key] = value  #
+                        try:
+                            df.at[new_id - 1, key] = value  #
+                        except ValueError:  # some times, the old values are NAN, so the whole columns is float64,
+                            #it will raise error if we put a string to float64 cell
+                            df[key] = df[key].astype(object)
+                            df.at[new_id - 1, key] = value
+
 
                 df = fill_running(df)
                 df = correct_type(df)
@@ -1328,8 +1540,7 @@ def check_time_difference(t1: datetime, t2: datetime):
 
 
 if __name__ == "__main__":
-
-    record_file = 'records.csv'
+    record_file = 'records_700.csv'
     id = record_experiment(record_file)
     train(id)
     record_experiment(record_file, current_id=id)
