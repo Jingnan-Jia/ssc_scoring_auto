@@ -27,13 +27,12 @@ from torch.utils.data import Dataset, DataLoader
 from torch.utils.data import WeightedRandomSampler
 
 import confusion
-from set_args_pos import args
 import jjnutils.util as futil
 import pingouin as pg
-from run import icc, appendrows_to
+from set_args_pos import args
 
 class SmallNet_pos(nn.Module):
-    def __init__(self, num_classes: int =5, base: int = 8):
+    def __init__(self, num_classes: int = 5, base: int = 8):
         super().__init__()
         self.features = nn.Sequential(
             nn.Conv3d(1, base, 3, padding=1),
@@ -88,7 +87,7 @@ def load_data_of_pats(dir_pats: Union[List, np.ndarray], label_file: str):
 
 def load_data_5labels(dir_pat: str, df_excel: pd.DataFrame) -> Tuple[str, np.ndarray]:
     data_name = dir_pat
-    idx = int(dir_pat.split('/')[-1].split('Pat_')[-1].split('_')[0])
+    idx = int(dir_pat.split('Pat_')[-1][:3])
     data_label = []
     for level in [1, 2, 3, 4, 5]:
         y = df_excel.at[idx, 'L' + str(level) + '_pos']
@@ -161,7 +160,7 @@ class SScScoreDataset(Dataset):
 
             img_before_aug = crop_center(data['image_key'], 512, 512)
             futil.save_itk('aug_before_' + data['fpath_key'].split('/')[-1],
-                     img_before_aug, data['origin_key'], data['space_key'], dtype='float')
+                           img_before_aug, data['origin_key'], data['space_key'], dtype='float')
         # if self.transform:
         #     self.data_xy=[self.transform(image, label) for image, label in zip(self.data_x_np, self.data_y_np)]
         #     self.data_x = [x for x in self.data_xy[0]]
@@ -173,7 +172,7 @@ class SScScoreDataset(Dataset):
 
         if check_aug_effect:
             futil.save_itk('aug_after_' + data['fpath_key'].split('/')[-1],
-                     data['image_key'], data['origin_key'], data['space_key'], dtype='float')
+                           data['image_key'], data['origin_key'], data['space_key'], dtype='float')
 
         data['image_key'] = torch.as_tensor(data['image_key'])
         data['label_key'] = torch.as_tensor(data['label_key'])
@@ -219,6 +218,7 @@ class Path:
                 print('successfully create directory:', dir)
 
         self.model_fpath = os.path.join(self.id_dir, 'model.pt')
+        self.model_wt_structure_fpath = os.path.join(self.id_dir, 'model_wt_structure.pt')
 
     def label(self, mode: str):
         return os.path.join(self.id_dir, mode + '_label.csv')
@@ -251,6 +251,7 @@ class RandGaussianNoisePosd:
         d['image_key'] = self.noise(d['image_key'])
         return d
 
+
 def shiftd(d, start, z_size, y_size, x_size):
     d['image_key'] = d['image_key'][start[0]:start[0] + z_size, start[1]:start[1] + y_size,
                      start[2]:start[2] + x_size]
@@ -260,6 +261,7 @@ def shiftd(d, start, z_size, y_size, x_size):
     d['label_key'][d['label_key'] > z_size] = z_size  # any position outside the edge would be set as edge
 
     return d
+
 
 class CenterCropPosd:
     def __init__(self, z_size=args.z_size, y_size=args.y_size, x_size=args.x_size):
@@ -301,7 +303,6 @@ class RandomCropPosd:
         d = shiftd(d, start, self.z_size, self.y_size, self.x_size)
 
         return d
-
 
 
 class ComposePosd:
@@ -388,58 +389,15 @@ def record_GPU_info():
     return None
 
 
-# def appendrows_to(fpath: str, data: np.ndarray):
-#     if not os.path.isfile(fpath):
-#         with open(fpath, 'a') as csv_file:
-#             writer = csv.writer(csv_file, delimiter=',')
-#             writer.writerow()
-#
-#     with open(fpath, 'a') as csv_file:
-#         writer = csv.writer(csv_file, delimiter=',')
-#         if len(data.shape) == 1:  # when data.shape==(-1,)  which means data batch size = 1
-#             writer.writerow(data)
-#             # data = data.reshape(-1, 1)
-#         else:
-#             writer.writerows(data)
 
-# def icc(label_fpath, pred_fpath):
-#     icc_dict = {}
-#
-#     label = pd.read_csv(label_fpath)
-#     original_columns = label.columns
-#     pred = pd.read_csv(pred_fpath)
-#
-#     # if len(label.columns) == 3:
-#     #     columns = ['disext', 'gg', 'retp']
-#     # elif len(label.columns) == 5:
-#     #     columns = ['L1', 'L2', 'L3', 'L4', 'L5']
-#     # else:
-#     #     raise Exception('wrong task')
-#
-#     # label.columns = columns
-#     # pred.columns = columns
-#
-#     label['ID'] = np.arange(1, len(label) + 1)
-#     label['rater'] = 'label'
-#
-#     pred['ID'] = np.arange(1, len(pred) + 1)
-#     pred['rater'] = 'pred'
-#
-#     data = pd.concat([label, pred], axis=0)
-#
-#     for column in original_columns:
-#         icc = pg.intraclass_corr(data=data, targets='ID', raters='rater', ratings=column).round(2)
-#         icc = icc.set_index("Type")
-#         icc = icc.loc['ICC2']['ICC']
-#         prefix = label_fpath.split("/")[-1].split("_")[0]
-#         icc_dict['icc_' + prefix + '_' + column] = icc
-#
-#     return icc_dict
 
 def split_dir_pats(data_dir, label_file, ts_id):
     abs_dir_path = os.path.dirname(os.path.realpath(__file__))  # abosolute path of the current .py file
     data_dir = abs_dir_path + "/" + data_dir
-    dir_pats = sorted(glob.glob(os.path.join(data_dir, "Pat_*")))
+
+    dir_pats = sorted(glob.glob(os.path.join(data_dir, "Pat_*CTimage.mha")))
+    if len(dir_pats)==0:
+        dir_pats = sorted(glob.glob(os.path.join(data_dir, "Pat_*", "CTimage.mha")))
 
     label_excel = pd.read_excel(label_file, engine='openpyxl')
 
@@ -449,7 +407,7 @@ def split_dir_pats(data_dir, label_file, ts_id):
     assert len(dir_pats) == len(pats_id_in_excel)
 
     # assert the names of patients got from 2 ways
-    pats_id_in_dir = [int(path.split('/')[-1].split('Pat_')[-1].split('_')[0]) for path in dir_pats]
+    pats_id_in_dir = [int(path.split('Pat_')[-1][:3]) for path in dir_pats]
     pats_id_in_excel = [int(pat_id) for pat_id in pats_id_in_excel]
     assert pats_id_in_dir == pats_id_in_excel
 
@@ -510,8 +468,8 @@ def start_run(mode, net, dataloader, epochs, loss_fun, loss_fun_mae, opt, scaler
                         pred = net(batch_x)
                 else:
                     pred = net(batch_x)
-                pred *= data['space_key'][:,0].reshape(-1,1).to(device)
-                batch_y *= data['space_key'][:,0].reshape(-1,1).to(device)
+                pred *= data['space_key'][:, 0].reshape(-1, 1).to(device)
+                batch_y *= data['space_key'][:, 0].reshape(-1, 1).to(device)
 
                 loss = loss_fun(pred, batch_y)
 
@@ -570,6 +528,7 @@ def start_run(mode, net, dataloader, epochs, loss_fun, loss_fun_mae, opt, scaler
 
             print('this model is the best one, save it. epoch id: ', epoch_idx)
             torch.save(net.state_dict(), mypath.model_fpath)
+            torch.save(net, mypath.model_wt_structure_fpath)
             print('save_successfully at ', mypath.model_fpath)
         return valid_mae_best
     else:
@@ -588,42 +547,6 @@ def save_xy(xs, ys, mode, mypath):  # todo: check typing
         for x, y in zip(xs, ys):
             writer.writerow([x, y])
 
-
-def prepare_data(mypath):
-    # get data_x names
-    kf5 = KFold(n_splits=args.total_folds, shuffle=True, random_state=42)  # for future reproduction
-    log_dict['data_shuffle'] = True
-    log_dict['data_shuffle_seed'] = 49
-
-    data_dir = "dataset/LowResolution_fix_size"
-    label_file = "dataset/SSc_DeepLearning/GohScores.xlsx"
-    log_dict['data_dir'] = data_dir
-    log_dict['label_file'] = label_file
-
-    # pat_names: Set = set(pat_names)
-    if args.ts_level_nb == 240:
-        ts_id = [68, 83, 36, 187, 238, 12, 158, 189, 230, 11, 35, 37, 137, 144, 17, 42, 66, 70, 28, 64, 210, 3, 49, 32,
-                 236, 206, 194, 196, 7, 9, 16, 19, 20, 21, 40, 46, 47, 57, 58, 59, 60, 62, 116, 117, 118, 128, 134, 216]
-        tr_vd_pt, ts_pt = split_dir_pats(data_dir, label_file, ts_id)
-
-        kf_list = list(kf5.split(tr_vd_pt))
-        tr_pt_idx, vd_pt_idx = kf_list[args.fold - 1]
-        tr_pt = tr_vd_pt[tr_pt_idx]
-        vd_pt = tr_vd_pt[vd_pt_idx]
-        log_dict['tr_pat_nb'] = len(tr_pt)
-        log_dict['vd_pat_nb'] = len(vd_pt)
-        log_dict['ts_pat_nb'] = len(ts_pt)
-
-        tr_x, tr_y = load_data_of_pats(tr_pt, label_file)
-        vd_x, vd_y = load_data_of_pats(vd_pt, label_file)
-        ts_x, ts_y = load_data_of_pats(ts_pt, label_file)
-
-    else:
-        raise Exception('please use correct testing dataset')
-
-    for x, y, mode in zip([tr_x, vd_x, ts_x], [tr_y, vd_y, ts_y], ['train', 'valid', 'test']):
-        save_xy(x, y, mode, mypath)
-    return tr_x, tr_y, vd_x, vd_y, ts_x, ts_y
 
 
 class MSEHigher(nn.Module):
@@ -707,54 +630,92 @@ def get_loss(args):
     return loss_fun
 
 
+def prepare_data(mypath, data_dir, label_file, kfold_seed=49, ts_level_nb=240, fold=1, total_folds =4):
+    # get data_x names
+    kf5 = KFold(n_splits=total_folds, shuffle=True, random_state=kfold_seed)  # for future reproduction
+
+    if ts_level_nb == 240:
+        ts_id = [68, 83, 36, 187, 238, 12, 158, 189, 230, 11, 35, 37, 137, 144, 17, 42, 66, 70, 28, 64, 210, 3, 49, 32,
+                 236, 206, 194, 196, 7, 9, 16, 19, 20, 21, 40, 46, 47, 57, 58, 59, 60, 62, 116, 117, 118, 128, 134, 216]
+        tr_vd_pt, ts_pt = split_dir_pats(data_dir, label_file, ts_id)
+
+        kf_list = list(kf5.split(tr_vd_pt))
+        tr_pt_idx, vd_pt_idx = kf_list[fold - 1]
+        tr_pt = tr_vd_pt[tr_pt_idx]
+        vd_pt = tr_vd_pt[vd_pt_idx]
+
+        tr_x, tr_y = load_data_of_pats(tr_pt, label_file)
+        vd_x, vd_y = load_data_of_pats(vd_pt, label_file)
+        ts_x, ts_y = load_data_of_pats(ts_pt, label_file)
+
+    else:
+        raise Exception('please use correct testing dataset')
+
+    for x, y, mode in zip([tr_x, vd_x, ts_x], [tr_y, vd_y, ts_y], ['train', 'valid', 'test']):
+        save_xy(x, y, mode, mypath)
+    return tr_x, tr_y, vd_x, vd_y, ts_x, ts_y
+
+
 def train(id: int):
     mypath = Path(id)
 
     net = get_net_pos(args.net, 5)
-    # tr_x, tr_y, vd_x, vd_y, ts_x, ts_y = prepare_data(mypath)
-    #
-    # tr_dataset = SScScoreDataset(data_x_names=tr_x, world_list=tr_y, transform=get_transformd('train'))
-    # vd_dataset = SScScoreDataset(data_x_names=vd_x, world_list=vd_y, transform=get_transformd())
-    # ts_dataset = SScScoreDataset(data_x_names=ts_x, world_list=ts_y, transform=get_transformd())
-    #
-    # workers = 5
-    # log_dict['loader_workers'] = workers
-    # train_dataloader = DataLoader(tr_dataset, batch_size=args.batch_size, shuffle=True, num_workers=workers)
-    # valid_dataloader = DataLoader(vd_dataset, batch_size=args.batch_size, shuffle=False, num_workers=workers)
-    # # valid_dataloader = train_dataloader
-    # test_dataloader = DataLoader(ts_dataset, batch_size=args.batch_size, shuffle=False, num_workers=workers)
-    #
-    # net = net.to(device)
-    # if args.eval_id:
-    #     mypath2 = Path(args.eval_id)
-    #     shutil.copy(mypath2.model_fpath, mypath.model_fpath)  # make sure there is at least one model there
-    #     for mo in ['train', 'valid', 'test']:
-    #         shutil.copy(mypath2.loss(mo), mypath.loss(mo))  # make sure there is at least one model there
-    #
-    #     net.load_state_dict(torch.load(mypath.model_fpath, map_location=device))
-    #     valid_mae_best = get_mae_best(mypath2.loss('valid'))
-    #     print(f'load model from {mypath2.model_fpath}, valid_mae_best is {valid_mae_best}')
-    # else:
-    #     valid_mae_best = 10000
-    #
-    # loss_fun = get_loss(args)
-    # loss_fun_mae = nn.L1Loss()
-    # lr = 1e-4
-    # log_dict['lr'] = lr
-    # opt = torch.optim.Adam(net.parameters(), lr=lr, weight_decay=args.weight_decay)
-    #
-    # scaler = torch.cuda.amp.GradScaler() if amp else None
-    # epochs = 1 if args.mode == 'infer' else args.epochs
-    # for i in range(epochs):  # 20000 epochs
-    #     if args.mode in ['train', 'continue_train']:
-    #         start_run('train', net, train_dataloader, epochs, loss_fun, loss_fun_mae, opt, scaler, mypath,
-    #                   i)
-    #     # run the validation
-    #     valid_mae_best = start_run('valid', net, valid_dataloader, epochs, loss_fun, loss_fun_mae, opt,
-    #                                scaler, mypath, i, valid_mae_best)
-    #     start_run('test', net, test_dataloader, epochs, loss_fun, loss_fun_mae, opt, scaler, mypath, i)
-    #
-    # record_best_preds(net, train_dataloader, valid_dataloader, test_dataloader, mypath)
+
+    data_dir: str = "dataset/LowResolution_fix_size"
+    label_file: str = "dataset/SSc_DeepLearning/GohScores.xlsx"
+    kfold_seed: int = 49
+
+    log_dict['data_dir'] = data_dir
+    log_dict['label_file'] = label_file
+    log_dict['data_shuffle_seed'] = kfold_seed
+
+    tr_x, tr_y, vd_x, vd_y, ts_x, ts_y = prepare_data(mypath, data_dir, label_file, kfold_seed=49, ts_level_nb=240, fold=args.fold, total_folds = args.total_folds)
+    log_dict['tr_pat_nb'] = len(tr_x)
+    log_dict['vd_pat_nb'] = len(vd_x)
+    log_dict['ts_pat_nb'] = len(ts_x)
+
+    tr_dataset = SScScoreDataset(data_x_names=tr_x, world_list=tr_y, transform=get_transformd('train'))
+    vd_dataset = SScScoreDataset(data_x_names=vd_x, world_list=vd_y, transform=get_transformd())
+    ts_dataset = SScScoreDataset(data_x_names=ts_x, world_list=ts_y, transform=get_transformd())
+
+    workers = 5
+    log_dict['loader_workers'] = workers
+    train_dataloader = DataLoader(tr_dataset, batch_size=args.batch_size, shuffle=True, num_workers=workers)
+    valid_dataloader = DataLoader(vd_dataset, batch_size=args.batch_size, shuffle=False, num_workers=workers)
+    # valid_dataloader = train_dataloader
+    test_dataloader = DataLoader(ts_dataset, batch_size=args.batch_size, shuffle=False, num_workers=workers)
+
+    net = net.to(device)
+    if args.eval_id:
+        mypath2 = Path(args.eval_id)
+        shutil.copy(mypath2.model_fpath, mypath.model_fpath)  # make sure there is at least one model there
+        for mo in ['train', 'valid', 'test']:
+            shutil.copy(mypath2.loss(mo), mypath.loss(mo))  # make sure there is at least one model there
+
+        net.load_state_dict(torch.load(mypath.model_fpath, map_location=device))
+        valid_mae_best = get_mae_best(mypath2.loss('valid'))
+        print(f'load model from {mypath2.model_fpath}, valid_mae_best is {valid_mae_best}')
+    else:
+        valid_mae_best = 10000
+
+    loss_fun = get_loss(args)
+    loss_fun_mae = nn.L1Loss()
+    lr = 1e-4
+    log_dict['lr'] = lr
+    opt = torch.optim.Adam(net.parameters(), lr=lr, weight_decay=args.weight_decay)
+
+    scaler = torch.cuda.amp.GradScaler() if amp else None
+    epochs = 1 if args.mode == 'infer' else args.epochs
+    for i in range(epochs):  # 20000 epochs
+        if args.mode in ['train', 'continue_train']:
+            start_run('train', net, train_dataloader, epochs, loss_fun, loss_fun_mae, opt, scaler, mypath,
+                      i)
+        # run the validation
+        valid_mae_best = start_run('valid', net, valid_dataloader, epochs, loss_fun, loss_fun_mae, opt,
+                                   scaler, mypath, i, valid_mae_best)
+        start_run('test', net, test_dataloader, epochs, loss_fun, loss_fun_mae, opt, scaler, mypath, i)
+
+    record_best_preds(net, train_dataloader, valid_dataloader, test_dataloader, mypath)
     for mode in ['train', 'valid', 'test']:
         if args.eval_id:
             mypath2 = Path(args.eval_id)
@@ -764,12 +725,13 @@ def train(id: int):
                 shutil.copy(mypath2.world(mo), mypath.world(mo))  # make sure there is at least one model there
                 shutil.copy(mypath2.pred(mo), mypath.pred(mo))  # make sure there is at least one model there
                 shutil.copy(mypath2.pred_int(mo), mypath.pred_int(mo))  # make sure there is at least one model there
-                shutil.copy(mypath2.pred_world(mo), mypath.pred_world(mo))  # make sure there is at least one model there
+                shutil.copy(mypath2.pred_world(mo),
+                            mypath.pred_world(mo))  # make sure there is at least one model there
 
         out_dt = confusion.confusion(mypath.world(mode), mypath.pred_world(mode), label_nb=args.z_size, space=1)
         log_dict.update(out_dt)
 
-        icc_ = icc(mypath.world(mode), mypath.pred_world(mode))
+        icc_ = futil.icc(mypath.world(mode), mypath.pred_world(mode))
         log_dict.update(icc_)
 
 
@@ -845,8 +807,6 @@ class Evaluater():
                         with torch.no_grad():
                             pred = self.net(batch_x)
 
-
-
                     pred = pred.cpu().detach().numpy()
                     pred += start.numpy().reshape((-1, 1))  # re organize it to original coordinate
                     pred_ls.append(pred)
@@ -863,11 +823,11 @@ class Evaluater():
 
                 batch_world: np.ndarray = batch_data['world_key'][idx].cpu().detach().numpy()
                 head = ['L1', 'L2', 'L3', 'L4', 'L5']
-                appendrows_to(self.mypath.label(self.mode), batch_label, head=head)
-                appendrows_to(self.mypath.pred(self.mode), batch_preds_ave, head=head)
-                appendrows_to(self.mypath.pred_int(self.mode), batch_preds_int, head=head)
-                appendrows_to(self.mypath.pred_world(self.mode), batch_preds_world, head=head)
-                appendrows_to(self.mypath.world(self.mode), batch_world, head=head)
+                futil.appendrows_to(self.mypath.label(self.mode), batch_label, head=head)
+                futil.appendrows_to(self.mypath.pred(self.mode), batch_preds_ave, head=head)
+                futil.appendrows_to(self.mypath.pred_int(self.mode), batch_preds_int, head=head)
+                futil.appendrows_to(self.mypath.pred_world(self.mode), batch_preds_world, head=head)
+                futil.appendrows_to(self.mypath.world(self.mode), batch_world, head=head)
 
 
 def record_best_preds(net, train_dataloader, valid_dataloader, test_dataloader, mypath):
@@ -885,10 +845,10 @@ def record_preds(mode, batch_y, pred, mypath, data):
     batch_preds_int = batch_preds.astype('Int64')
     batch_preds_world = batch_preds_int * data['space_key'] + data['origin_key']
 
-    appendrows_to(mypath.label(mode), batch_label)
-    appendrows_to(mypath.pred(mode), batch_preds)
-    appendrows_to(mypath.pred_int(mode), batch_preds_int)
-    appendrows_to(mypath.pred_world(mode), batch_preds_world)
+    futil.appendrows_to(mypath.label(mode), batch_label)
+    futil.appendrows_to(mypath.pred(mode), batch_preds)
+    futil.appendrows_to(mypath.pred_int(mode), batch_preds_int)
+    futil.appendrows_to(mypath.pred_world(mode), batch_preds_world)
 
 
 def fill_running(df: pd.DataFrame):
@@ -1027,6 +987,8 @@ def check_time_difference(t1: datetime, t2: datetime):
 
 
 if __name__ == "__main__":
+
+
     LogType = Optional[Union[int, float, str]]  # int includes bool
     log_dict: Dict[str, LogType] = {}  # a global dict to store variables saved to log files
 

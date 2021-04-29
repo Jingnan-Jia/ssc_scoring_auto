@@ -2,6 +2,7 @@
 # @Time    : 3/3/21 12:25 PM
 # @Author  : Jingnan
 # @Email   : jiajingnan2222@gmail.com
+import copy
 import csv
 import datetime
 import glob
@@ -11,9 +12,10 @@ import random
 import shutil
 import threading
 import time
-from typing import (List, Tuple, Optional, Union, Dict)
+from collections import OrderedDict
+from typing import (List, Tuple, Optional, Union, Dict, Sequence)
 
-import SimpleITK as sitk
+import jjnutils.util as futil
 import numpy as np
 import nvidia_smi
 import pandas as pd
@@ -22,25 +24,224 @@ import torch.nn as nn
 # import streamlit as st
 import torchvision.models as models
 from filelock import FileLock
-from monai.transforms import ScaleIntensityRange, RandGaussianNoise
+from monai.transforms import ScaleIntensityRange, RandGaussianNoise, MapTransform
 from sklearn.model_selection import KFold
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.data import WeightedRandomSampler
 from torchvision import transforms
 from torchvision.transforms import RandomHorizontalFlip, RandomVerticalFlip, CenterCrop, RandomAffine
-import jjnutils.util as futil
+from tqdm import tqdm
 
 import confusion
 from set_args import args
-import pingouin as pg
-import random
-
 
 LogType = Optional[Union[int, float, str]]  # int includes bool
 log_dict: Dict[str, LogType] = {}  # a global dict to store variables saved to log files
 
 
-class SmallNet(nn.Module):
+def summary(model: nn.Module, input_size: Tuple[int, ...], batch_size=-1, device="cpu"):
+    def register_hook(module):
+
+        def hook(module, input, output):
+            class_name = str(module.__class__).split(".")[-1].split("'")[0]
+            module_idx = len(summary)
+
+            m_key = "%s-%i" % (class_name, module_idx + 1)
+            summary[m_key] = OrderedDict()
+            summary[m_key]["input_shape"] = list(input[0].size())
+            summary[m_key]["input_shape"][0] = batch_size
+            if isinstance(output, (list, tuple)):
+                summary[m_key]["output_shape"] = [
+                    [-1] + list(o.size())[1:] for o in output
+                ]
+            else:
+                summary[m_key]["output_shape"] = list(output.size())
+                summary[m_key]["output_shape"][0] = batch_size
+
+            params = 0
+            if hasattr(module, "weight") and hasattr(module.weight, "size"):
+                params += torch.prod(torch.LongTensor(list(module.weight.size())))
+                summary[m_key]["trainable"] = module.weight.requires_grad
+            if hasattr(module, "bias") and hasattr(module.bias, "size"):
+                params += torch.prod(torch.LongTensor(list(module.bias.size())))
+            summary[m_key]["nb_params"] = params
+
+        if (
+                not isinstance(module, nn.Sequential)
+                and not isinstance(module, nn.ModuleList)
+                and not (module == model)
+        ):
+            hooks.append(module.register_forward_hook(hook))
+
+    device = device.lower()
+    assert device in [
+        "cuda",
+        "cpu",
+    ], "Input device is not valid, please specify 'cuda' or 'cpu'"
+
+    if device == "cuda" and torch.cuda.is_available():
+        dtype = torch.cuda.FloatTensor
+    else:
+        dtype = torch.FloatTensor
+
+    # multiple inputs to the network
+    if isinstance(input_size, tuple):
+        input_size = [input_size]
+
+    # batch_size of 2 for batchnorm
+    x = [torch.rand(2, *in_size).type(dtype) for in_size in input_size]
+    # print(type(x[0]))
+
+    # create properties
+    summary = OrderedDict()
+    hooks = []
+
+    # register hook
+    model.apply(register_hook)
+
+    # make a forward pass
+    # print(x.shape)
+    model(*x)
+
+    # remove these hooks
+    for h in hooks:
+        h.remove()
+
+    print("----------------------------------------------------------------")
+    line_new = "{:>20}  {:>25} {:>15}".format("Layer (type)", "Output Shape", "Param #")
+    print(line_new)
+    print("================================================================")
+    total_params: Union[torch.Tensor, int] = 0
+    total_output = 0
+    trainable_params = 0
+    for layer in summary:
+        # input_shape, output_shape, trainable, nb_params
+        line_new = "{:>20}  {:>25} {:>15}".format(
+            layer,
+            str(summary[layer]["output_shape"]),
+            "{0:,}".format(summary[layer]["nb_params"]),
+        )
+        total_params += summary[layer]["nb_params"]
+        total_output += np.prod(summary[layer]["output_shape"])
+        if "trainable" in summary[layer]:
+            if summary[layer]["trainable"] == True:
+                trainable_params += summary[layer]["nb_params"]
+        print(line_new)
+
+    # assume 4 bytes/number (float on cuda).
+    total_input_size = abs(np.prod(input_size) * batch_size * 4. / (1024 ** 2.))
+    total_output_size = abs(2. * total_output * 4. / (1024 ** 2.))  # x2 for gradients
+    total_params_size = abs(total_params.numpy() * 4. / (1024 ** 2.))
+    total_size = total_params_size + total_output_size + total_input_size
+
+    print("================================================================")
+    print("Total params: {0:,}".format(total_params))
+    print("Trainable params: {0:,}".format(trainable_params))
+    print("Non-trainable params: {0:,}".format(total_params - trainable_params))
+    print("----------------------------------------------------------------")
+    print("Input size (MB): %0.2f" % total_input_size)
+    print("Forward/backward pass size (MB): %0.2f" % total_output_size)
+    print("Params size (MB): %0.2f" % total_params_size)
+    print("Estimated Total Size (MB): %0.2f" % total_size)
+    print("----------------------------------------------------------------")
+    return summary
+
+
+class ReconNet(nn.Module):
+    def __init__(self, reg_net, input_size=512):
+        super().__init__()
+        self.reg_net = reg_net
+        self.features = copy.deepcopy(reg_net.features)  # encoder
+        self.enc_dec = self._build_dec_from_enc()
+
+    def _last_channels(self):
+        last_chn = None
+        for layer in self.features[::-1]:
+            if isinstance(layer, torch.nn.Conv2d):
+                last_chn = layer.out_channels
+                break
+        if last_chn is None:
+            raise Exception("No convolution layers at all in regression network")
+        return last_chn
+
+    def _build_dec_from_enc(self):
+        decoder_ls = []
+        in_channels = None  # statement for convtransposed
+        last_chns = self._last_channels()
+
+        layer_shapes = summary(self.features, (1, 512, 512))  # ordered dict saving shapes of each layer
+        transit_chn = 0
+        for layer, (layer_name, layer_shape) in zip(self.features[::-1], reversed(layer_shapes.items())):
+            if transit_chn == 0:
+                transit_chn = layer_shape['input_shape'][1]
+
+            if isinstance(layer, torch.nn.Conv2d):
+
+                enc_in_channels = layer_shape['input_shape'][1]
+                # enc_out_channels = layer_shape['output_shape'][1]
+
+                enc_kernel_size: int = layer.kernel_size[0]  # square kernel, get one of the sizes
+                enc_stride: int = layer.stride[0]
+
+                if enc_stride > 1:  # shape is reduced
+                    decoder_ls.append(nn.Upsample(scale_factor=enc_stride, mode='bilinear'))
+                    decoder_ls.append(nn.Conv2d(transit_chn, enc_in_channels, enc_kernel_size,
+                                                padding=enc_kernel_size - enc_kernel_size // 2 - 1))
+                else:
+                    decoder_ls.append(nn.Conv2d(transit_chn, enc_in_channels, enc_kernel_size,
+                                                padding=enc_kernel_size - enc_kernel_size // 2 - 1))
+
+                decoder_ls.extend([nn.BatchNorm2d(enc_in_channels),
+                                   nn.ReLU(inplace=True)])
+
+                transit_chn = enc_in_channels  # new value
+
+            elif isinstance(layer, torch.nn.MaxPool2d):
+                decoder_ls.append(nn.Upsample(scale_factor=2, mode='bilinear'))
+                decoder_ls.append(nn.Conv2d(transit_chn, transit_chn, 3, padding=1))
+                decoder_ls.extend([nn.BatchNorm2d(transit_chn),
+                                   nn.ReLU(inplace=True)])
+
+            else:
+                pass
+        # correct the shape of the final output
+        while (isinstance(decoder_ls[-1], nn.ReLU)) or (isinstance(decoder_ls[-1], nn.BatchNorm2d)):
+            decoder_ls.pop()
+        decoder = nn.Sequential(*decoder_ls)
+
+        # class EncDoc(nn.Module):
+        #     def __init__(self, enc, dec):
+        #         super().__init__()
+        #         self.enc = enc
+        #         self.dec = dec
+        #
+        #     def forward(self, x):
+        #         out = self.enc(x)
+        #         out = self.dec(out)
+        #         return out
+        #
+        # enc_dec = EncDoc(self.features, decoder)
+        enc_dec = nn.Sequential(self.features, decoder)
+        enc_dec_layer_shapes = summary(enc_dec, (1, 512, 512), device='cpu')
+        input_sz = list(iter(enc_dec_layer_shapes.items()))[0][-1]['input_shape'][-1]
+        output_sz = list(iter(enc_dec_layer_shapes.items()))[-1][-1]['input_shape'][-1]
+        dif: int = input_sz - output_sz
+        if dif > 0:  # the last output of decoder is less than the first output of encoder, need pad
+            enc_dec = nn.Sequential(enc_dec,
+                                    nn.Upsample(size=input_sz, mode="bilinear"),
+                                    nn.Conv2d(1, 1, 3, padding=1))
+
+        # decoder_dict = OrderedDict([(key, value) for key, value in zip(range(len(decoder_ls)), decoder_ls)])
+        tmp = summary(enc_dec, (1, 512, 512), device='cpu')
+        return enc_dec
+
+    def forward(self, x):
+        out = self.enc_dec(x)
+
+        return out
+
+
+class Cnn3fc1(nn.Module):
     def __init__(self, num_classes=1000):
         super().__init__()
         self.features = nn.Sequential(
@@ -71,15 +272,16 @@ class SmallNet(nn.Module):
         return x
 
 
-
-class Cnn2fc1(nn.Module):
+class Cnn2fc1_old(nn.Module):
     def __init__(self, num_classes=1000):
         super().__init__()
         self.features = nn.Sequential(
-            nn.Conv2d(1, 64, kernel_size=11, stride=4, padding=2),
+            nn.Conv2d(1, 64, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(64),
             nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=3, stride=2),
-            nn.Conv2d(64, 128, kernel_size=5, padding=2),
+            nn.MaxPool2d(kernel_size=3, stride=1),
+            nn.Conv2d(64, 128, kernel_size=3, padding=1),
+            nn.BatchNorm2d(128),
             nn.ReLU(inplace=True),
             nn.MaxPool2d(kernel_size=3, stride=2),
         )
@@ -100,35 +302,28 @@ class Cnn2fc1(nn.Module):
         return x
 
 
-
-class ReconNet(nn.Module):
+class Cnn2fc1(nn.Module):
 
     def __init__(self, num_classes=1000):
         super().__init__()
         self.features = nn.Sequential(
-            nn.Conv2d(3, 64, kernel_size=11, stride=4, padding=2),
+            nn.Conv2d(1, 64, kernel_size=11, stride=4, padding=2),
+            nn.BatchNorm2d(64),
             nn.ReLU(inplace=True),
             nn.MaxPool2d(kernel_size=3, stride=2),
-            nn.Conv2d(64, 192, kernel_size=5, padding=2),
+            nn.Conv2d(64, 128, kernel_size=5, padding=2),
+            nn.BatchNorm2d(128),
             nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=3, stride=2),
-            nn.Conv2d(192, 384, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(384, 256, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(256, 256, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=3, stride=2),
+            nn.MaxPool2d(kernel_size=3, stride=2)
+
         )
         self.avgpool = nn.AdaptiveAvgPool2d((6, 6))
         self.classifier = nn.Sequential(
             nn.Dropout(),
-            nn.Linear(256 * 6 * 6, 4096),
+            nn.Linear(128 * 6 * 6, 256),
             nn.ReLU(inplace=True),
             nn.Dropout(),
-            nn.Linear(4096, 4096),
-            nn.ReLU(inplace=True),
-            nn.Linear(4096, num_classes),
+            nn.Linear(256, num_classes),
         )
 
     def forward(self, x):
@@ -138,6 +333,44 @@ class ReconNet(nn.Module):
         x = self.classifier(x)
         return x
 
+
+class Cnn2fc1_with_shape(nn.Module):
+
+    def __init__(self, num_classes=1000, input_len=512):
+        super().__init__()
+        # self.cn_1_dict = {"in_chn":3, "out_chn":64, "kernel_size":11, "stride":4, "padding":2}
+        # self.cn_2_dict = {"in_chn":64, "out_chn":128, "kernel_size":5, "stride":1, "padding":2}
+        #
+        #
+        # log_dict.update("cn_1_dict":self.cn_1_dict)
+
+        self.features = nn.Sequential(
+            nn.Conv2d(3, 64, kernel_size=11, stride=4, padding=2),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=3, stride=2),
+            nn.Conv2d(64, 128, kernel_size=5, padding=2),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=3, stride=2),
+
+        )
+
+        self.avgpool = nn.AdaptiveAvgPool2d((6, 6))
+        self.classifier = nn.Sequential(
+            nn.Dropout(),
+            nn.Linear(128 * 6 * 6, 256),
+            nn.ReLU(inplace=True),
+            nn.Dropout(),
+            nn.Linear(256, num_classes),
+        )
+
+    def forward(self, x):
+        x = self.features(x)
+        x = self.avgpool(x)
+        x = torch.flatten(x, 1)
+        x = self.classifier(x)
+        return x
 
 
 def get_net(name: str, nb_cls: int):
@@ -160,8 +393,8 @@ def get_net(name: str, nb_cls: int):
         net.classifier[1] = torch.nn.Linear(in_features=256 * 6 * 6, out_features=args.fc1_nodes)
         net.classifier[4] = torch.nn.Linear(in_features=args.fc1_nodes, out_features=args.fc2_nodes)
         net.classifier[6] = torch.nn.Linear(in_features=args.fc2_nodes, out_features=3)
-    elif name == 'conv3fc1':
-        net = SmallNet(num_classes=3)
+    elif name == 'cnn3fc1':
+        net = Cnn3fc1(num_classes=3)
     elif name == 'cnn2fc1':
         net = Cnn2fc1(num_classes=3)
     elif name == 'squeezenet':
@@ -277,7 +510,7 @@ def load_level_names_from_dir(pat_dir: str, label_file: str, levels: Union[int, 
     return x_list, y_list
 
 
-def load_data_of_pats(dir_pats: List, label_file: str):
+def load_data_of_pats(dir_pats: Sequence, label_file: str):
     df_excel = pd.read_excel(label_file, engine='openpyxl')
     df_excel = df_excel.set_index('PatID')
     x, y = [], []
@@ -401,6 +634,58 @@ def normalize(image):
     image = image - mean
     image = image / std
     return image
+
+
+class ReconDatasetd(Dataset):
+    def __init__(self, data_x_names, transform=None):
+        self.data_x_names = data_x_names
+        print("loading 3D CT ...")
+        self.data_x = [futil.load_itk(x, require_ori_sp=True) for x in tqdm(self.data_x_names)]
+        self.data_x_np = [i[0] for i in self.data_x]
+
+        normalize0to1 = ScaleIntensityRange(a_min=-1500.0, a_max=1500.0, b_min=0.0, b_max=1.0, clip=True)
+        print("normalizing data")
+        self.data_x_np = [normalize0to1(x_np) for x_np in tqdm(self.data_x_np)]
+
+        self.data_x_np = [x.astype(np.float32) for x in self.data_x_np]
+        # print("padding data")
+        # pad the whole 3D data along x and y axis
+        # self.data_x_np = [np.pad(x, pad_width=((0, 0), (128, 128), (128, 128)), mode='constant') for x in
+        #                   tqdm(self.data_x_np)]
+        self.data_x_tensor = [torch.as_tensor(x) for x in self.data_x_np]
+        self._shuffle_slice_idx()
+        self.transform = transform
+
+    def _shuffle_slice_idx(self):
+
+        self.data_x_slice_idx = [list(range(len(x))) for x in self.data_x_np]
+        for ls in self.data_x_slice_idx:
+            random.shuffle(ls)  # shuffle list inplace
+        # self.data_x_slice_idx_shuffled = [idx_ls for idx_ls in self.data_x_slice_idx]
+        self.data_x_slice_idx_gen = []
+        for ls in self.data_x_slice_idx:
+            self.data_x_slice_idx_gen.append(iter(ls))
+        # self.data_x_slice_idx_gen = [(idx for idx in idx_ls) for idx_ls in self.data_x_slice_idx]
+
+
+
+    def __len__(self):
+        return len(self.data_x_np)
+
+    def __getitem__(self, idx):
+        img = self.data_x_tensor[idx]
+        try:
+            slice_nb = next(self.data_x_slice_idx_gen[idx])
+        except StopIteration:
+            self._shuffle_slice_idx()
+            slice_nb = next(self.data_x_slice_idx_gen[idx])
+        # slice_nb = random.randint(0, len(img) - 1)  # random integer in range [a, b], including both end points.
+        slice = img[slice_nb]
+
+        data = {'image_key': slice}
+        if self.transform:
+            data = self.transform(data)
+        return data
 
 
 class SScScoreDataset(Dataset):
@@ -535,54 +820,51 @@ class SynthesisDataset(Dataset):
         return data
 
 
-
-
 class Synthesisd:
     def __init__(self):
         self.elipse_upper_nb = 3
         self.gg_sample_fpath = None
-        self.retp_sample_fpath =None
+        self.retp_sample_fpath = None
         self.gg_sample = futil.load_itk(self.gg_sample_fpath)
         self.retp_sample = futil.load_itk(self.retp_sample_fpath)
-
 
     def __call__(self, data):
         d = dict(data)
 
         self.img = d['image_key']
         self.y = d['label_key']
-        gg_synthesis = self.synthesis_data(self.img, fill = self.gg_sample)
-        retp_synthesis = self.synthesis_data(self.img, fill = self.retp_sample)
+        gg_synthesis = self.synthesis_data(self.img, fill=self.gg_sample)
+        retp_synthesis = self.synthesis_data(self.img, fill=self.retp_sample)
 
-    def synthesis_data(self, img, fill = None):
+    def synthesis_data(self, img, fill=None):
         self.elipse_nb = random.randint(1, self.elipse_upper_nb)  # 1,2,or 3
         for i in range(self.elipse_nb):
             coordi_x = random.randint(0, self.img.shape[0])
             coordi_y = random.randint(0, self.img.shape[0])
 
 
-
-
 class MyNormalize:
-    def __call__(self, img):
+    def __call__(self, img: Union[np.ndarray, torch.Tensor]):
         if type(img) == np.ndarray:
             mean, std = np.mean(img), np.std(img)
-        elif type(img) == torch.Tensor:
+        else:
             mean, std = torch.mean(img), torch.std(img)
         img = img - mean
         img = img / std
         return img
 
 
-
-class MyNormalized(MyNormalize):
-    def __init__(self, *args, **kargs):
-        super().__init__(*args, **kargs)
+class MyNormalized(MapTransform):
+    def __init__(self, keys):
+        super().__init__(keys)
+        self.norm = MyNormalize()
 
     def __call__(self, data):
         d = dict(data)
-        d['image_key'] = super().__call__(d['image_key'])
+        for key in self.keys:
+            d[key] = self.norm(d[key])
         return d
+
 
 
 class AddChannel:
@@ -598,23 +880,27 @@ class AddChannel:
         return image
 
 
-class AddChanneld(AddChannel):
-    def __init__(self, *args, **kargs):
-        super().__init__(*args, **kargs)
+class AddChanneld(MapTransform):
+    def __init__(self, keys):
+        super().__init__(keys)
+        self.add_chn = AddChannel()
 
     def __call__(self, data):
         d = dict(data)
-        d['image_key'] = super().__call__(d['image_key'])
+        for key in self.keys:
+            d[key] = self.add_chn(d[key])
         return d
 
 
-class RandGaussianNoised(RandGaussianNoise):
-    def __init__(self, *args, **kargs):
-        super().__init__(*args, **kargs)
+class RandGaussianNoised(MapTransform):
+    def __init__(self, keys, *args, **kwargs):
+        super().__init__(keys)
+        self.gaussian = RandGaussianNoise(*args, **kwargs)
 
     def __call__(self, data):
         d = dict(data)
-        d['image_key'] = super().__call__(d['image_key'])
+        for key in self.keys:
+            d[key] = self.gaussian(d[key])
         return d
 
 
@@ -633,13 +919,15 @@ class Clip:
         return img
 
 
-class Clipd(Clip):
-    def __init__(self, *args, **kargs):
-        super().__init__(*args, **kargs)
+class Clipd(MapTransform):
+    def __init__(self, keys, min, max):
+        super().__init__(keys)
+        self.clip = Clip(min, max)
 
     def __call__(self, data):
         d = dict(data)
-        d['image_key'] = super().__call__(d['image_key'])
+        for key in self.keys:
+            d[key] = self.clip(d[key])
         return d
 
 
@@ -661,6 +949,7 @@ class Path:
                 print('successfully create directory:', dir)
 
         self.model_fpath = os.path.join(self.id_dir, 'model.pt')
+        self.model_wt_structure_fpath = os.path.join(self.id_dir, 'model_wt_structure.pt')
 
     def label(self, mode: str):
         return os.path.join(self.id_dir, mode + '_label.csv')
@@ -681,72 +970,80 @@ class Path:
         return os.path.join(self.id_dir, mode + '_data.csv')
 
 
-class RandomAffined(RandomAffine):
-    def __init__(self, *args, **kargs):
-        super().__init__(*args, **kargs)
+class RandomAffined(MapTransform):
+    def __init__(self, keys, *args, **kwargs):
+        super().__init__(keys)
+        self.random_affine = RandomAffine(*args, **kwargs)
 
     def __call__(self, data):
         d = dict(data)
-        img = d['image_key']
-        d['image_key'] = super().forward(img)
+        for key in self.keys:
+            d[key] = self.random_affine(d[key])
         return d
 
 
-class CenterCropd(CenterCrop):
-    def __init__(self, *args, **kargs):
-        super().__init__(*args, **kargs)
+class CenterCropd(MapTransform):
+    def __init__(self, keys, *args, **kargs):
+        super().__init__(keys)
+        self.center_crop = CenterCrop(*args, **kargs)
+    def __call__(self, data):
+        d = dict(data)
+        for key in self.keys:
+            d[key] = self.center_crop(d[key])
+        return d
+
+
+class RandomHorizontalFlipd(MapTransform):
+    def __init__(self, keys, *args, **kargs):
+        super().__init__(keys)
+        self.random_hflip = RandomHorizontalFlip(*args, **kargs)
+
 
     def __call__(self, data):
         d = dict(data)
-        d['image_key'] = super().__call__(d['image_key'])
+        for key in self.keys:
+            d[key] = self.random_hflip(d[key])
         return d
 
 
-class RandomHorizontalFlipd(RandomHorizontalFlip):
-    def __init__(self, *args, **kargs):
-        super().__init__(*args, **kargs)
+class RandomVerticalFlipd(MapTransform):
+    def __init__(self, keys, *args, **kargs):
+        super().__init__(keys)
+        self.random_vflip = RandomVerticalFlip(*args, **kargs)
 
     def __call__(self, data):
         d = dict(data)
-        d['image_key'] = super().__call__(d['image_key'])
+        for key in self.keys:
+            d[key] = self.random_vflip(d[key])
         return d
 
 
-class RandomVerticalFlipd(RandomVerticalFlip):
-    def __init__(self, *args, **kargs):
-        super().__init__(*args, **kargs)
-
-    def __call__(self, data):
-        d = dict(data)
-        d['image_key'] = super().__call__(d['image_key'])
-        return d
-
-
-def get_transform(mode=None):
+def ssc_transformd(mode ='train'):
     """
     The input image data is from 0 to 1.
     :param mode:
     :return:
     """
+    keys = "image_key"
     rotation = 90
     image_size = 512
     vertflip = 0.5
     horiflip = 0.5
     shift = 10 / 512
     scale = 0.05
-    xforms = [AddChannel()]
+    xforms = [AddChanneld(keys)]
     if mode == 'train':
         xforms.extend([
-            RandomAffine(degrees=rotation, translate=(shift, shift), scale=(1 - scale, 1 + scale), fillcolor=0),
-            CenterCrop(image_size),
-            RandomHorizontalFlip(p=horiflip),
-            RandomVerticalFlip(p=vertflip),
-            RandGaussianNoise()
+            RandomAffined(keys=keys, degrees=rotation, translate=(shift, shift), scale=(1 - scale, 1 + scale)),
+            # CenterCropd(image_size),
+            RandomHorizontalFlipd(keys, p=horiflip),
+            RandomVerticalFlipd(keys, p=vertflip),
+            RandGaussianNoised(keys)
         ])
-    else:
-        xforms.append(CenterCrop(image_size))
+    # else:
+    # xforms.append(CenterCropd(image_size))
 
-    xforms.append(MyNormalize())
+    xforms.append(MyNormalized(keys))
 
     transform = transforms.Compose(xforms)
     global log_dict
@@ -756,48 +1053,17 @@ def get_transform(mode=None):
     log_dict['RandomShift'] = shift
     log_dict['image_size'] = image_size
     log_dict['RandGaussianNoise'] = 0.1
-    log_dict['RandScale'] = 0.05
+    log_dict['RandScale'] = scale
 
     return transform
 
 
-def get_transformd(mode=None):
-    """
-    The input image data is from 0 to 1.
-    :param mode:
-    :return:
-    """
-    rotation = 90
-    image_size = 512
-    vertflip = 0.5
-    horiflip = 0.5
-    shift = 10 / 512
-    scale = 0.05
-    xforms = [AddChanneld()]
-    if mode == 'train':
-        xforms.extend([
-            RandomAffined(degrees=rotation, translate=(shift, shift), scale=(1 - scale, 1 + scale)),
-            CenterCropd(image_size),
-            RandomHorizontalFlipd(p=horiflip),
-            RandomVerticalFlipd(p=vertflip),
-            RandGaussianNoised()
-        ])
-    else:
-        xforms.append(CenterCropd(image_size))
-
-    xforms.append(MyNormalized())
-
-    transform = transforms.Compose(xforms)
-    global log_dict
-    log_dict['RandomVerticalFlip'] = vertflip
-    log_dict['RandomHorizontalFlip'] = horiflip
-    log_dict['RandomRotation'] = rotation
-    log_dict['RandomShift'] = shift
-    log_dict['image_size'] = image_size
-    log_dict['RandGaussianNoise'] = 0.1
-    log_dict['RandScale'] = 0.05
-
-    return transform
+def recon_transformd(mode='train'):
+    keys = "image_key"  # only transform image
+    xforms = [AddChanneld(keys), RandomHorizontalFlipd(keys), RandomVerticalFlipd(keys)]
+    xforms.append(MyNormalized(keys))
+    xforms = transforms.Compose(xforms)
+    return xforms
 
 
 def _bytes_to_megabytes(value_bytes):
@@ -828,19 +1094,6 @@ def record_GPU_info():
         gpu_util = gpu_util / 5
         log_dict['gpu_util'] = str(gpu_util) + '%'
     return None
-
-
-def appendrows_to(fpath, data, head: list =None):
-    if not os.path.isfile(fpath):
-        with open(fpath, 'a') as csv_file:
-            writer = csv.writer(csv_file, delimiter=',')
-            writer.writerow(head)
-
-    with open(fpath, 'a') as csv_file:
-        writer = csv.writer(csv_file, delimiter=',')
-        if len(data.shape) == 1:  # when data.shape==(batch_size,) in classification task
-            data = data.reshape(-1, 1)
-        writer.writerows(data)
 
 
 def round_to_5(pred: Union[torch.Tensor, np.ndarray], device=torch.device("cpu")) -> Union[torch.Tensor, np.ndarray]:
@@ -926,11 +1179,14 @@ def start_run(mode, net, dataloader, amp, epochs, device, loss_fun, loss_fun_mae
     total_loss_mae = 0
     total_loss_mae_end5 = 0
     for data in dataloader:
-
-        batch_x, batch_y = data['image_key'], data['label_key']
+        if 'label_key' not in data:
+            batch_x, batch_y = data['image_key'], data['image_key']
+        else:
+            batch_x, batch_y = data['image_key'], data['label_key']
 
         batch_x = batch_x.to(device)
         batch_y = batch_y.to(device)
+        print(f"batch_x.shape: {batch_x.shape}, batch_y.shape: {batch_y.shape} ")
         if args.r_c == "c":
             batch_y = batch_y.type(torch.LongTensor)  # crossentropy requires LongTensor
             batch_y = batch_y.to(device)
@@ -986,7 +1242,7 @@ def start_run(mode, net, dataloader, amp, epochs, device, loss_fun, loss_fun_mae
                 loss.backward()
                 opt.step()
 
-        print(loss.item(), pred[0].clone().detach().cpu().numpy())
+        print(f"loss: {loss.item()}, pred.shape: {pred.shape}")
 
         total_loss += loss.item()
         total_loss_mae += loss_mae.item()
@@ -999,7 +1255,6 @@ def start_run(mode, net, dataloader, amp, epochs, device, loss_fun, loss_fun_mae
                 p1.start()
             except RuntimeError as e:
                 print(e)
-
 
     ave_loss = total_loss / batch_idx
     ave_loss_mae = total_loss_mae / batch_idx
@@ -1023,6 +1278,7 @@ def start_run(mode, net, dataloader, amp, epochs, device, loss_fun, loss_fun_mae
 
             print('this model is the best one, save it. epoch id: ', epoch_idx)
             torch.save(net.state_dict(), mypath.model_fpath)
+            torch.save(net, mypath.model_wt_structure_fpath)
             print('save_successfully at ', mypath.model_fpath)
         return valid_mae_best
     else:
@@ -1033,43 +1289,6 @@ def get_column(n, tr_y):
     column = [i[n] for i in tr_y]
     column = [j / 5 for j in column]  # convert labels from [0,5,10, ..., 100] to [0, 1, 2, ..., 20]
     return column
-
-
-def icc(label_fpath, pred_fpath):
-    icc_dict = {}
-
-    label = pd.read_csv(label_fpath)
-    pred = pd.read_csv(pred_fpath)
-    if label.columns[0] not in ['L1_pos','L1', 'disext']:
-        label = pd.read_csv(label_fpath, header=None)
-        pred = pd.read_csv(pred_fpath, header=None)
-
-        if len(label.columns) == 5:
-            columns = ['L1', 'L2', 'L3', 'L4', 'L5']
-        else:
-            columns = ['disext', 'gg', 'retp']
-        label.columns = columns
-        pred.columns = columns
-
-    label.astype(float)
-    pred.astype(float)
-    original_columns = label.columns
-    label['ID'] = np.arange(1, len(label) + 1)
-    label['rater'] = 'label'
-
-    pred['ID'] = np.arange(1, len(pred) + 1)
-    pred['rater'] = 'pred'
-
-    data = pd.concat([label, pred], axis=0)
-
-    for column in original_columns:
-        icc = pg.intraclass_corr(data=data, targets='ID', raters='rater', ratings=column).round(2)
-        icc = icc.set_index("Type")
-        icc = icc.loc['ICC2']['ICC']
-        prefix = label_fpath.split("/")[-1].split("_")[0]
-        icc_dict['icc_' + prefix + '_' + column] = icc
-
-    return icc_dict
 
 
 def split_ts_data_by_levels(data_dir, label_file):
@@ -1107,7 +1326,7 @@ def save_xy(xs, ys, mode, mypath):  # todo: check typing
 
 def prepare_data(mypath):
     # get data_x names
-    kf5 = KFold(n_splits=args.total_folds, shuffle=True, random_state=42)  # for future reproduction
+    kf5 = KFold(n_splits=args.total_folds, shuffle=True, random_state=49)  # for future reproduction
     log_dict['data_shuffle'] = True
     log_dict['data_shuffle_seed'] = 49
 
@@ -1246,83 +1465,101 @@ def get_loss(args):
 
 def train(id_: int):
     mypath = Path(id_)
-    if args.eval_id != 0 or args.mode == 'train':
-        if torch.cuda.is_available():
-            device = torch.device("cuda")
-            amp = True
-        else:
-            device = torch.device("cpu")
-            amp = False
-        log_dict['amp'] = amp
+    # if args.eval_id != 0 or args.mode == 'train':
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+        amp = True
+    else:
+        device = torch.device("cpu")
+        amp = False
+    log_dict['amp'] = amp
 
-        net = get_net(args.net, 3) if args.r_c == "r" else get_net(args.net, 21)
+    net = get_net(args.net, 3) if args.r_c == "r" else get_net(args.net, 21)
+    if args.train_recon:
+        net = ReconNet(net)
+
+        data_dir: str = "dataset/SSc_DeepLearning"
+        label_file: str = "dataset/SSc_DeepLearning/GohScores.xlsx"
+        from run_pos import prepare_data as prepare_data_3D
+        tr_x, tr_y, vd_x, vd_y, ts_x, ts_y = prepare_data_3D(mypath, data_dir, label_file,
+                                                             kfold_seed=49, ts_level_nb=args.ts_level_nb,
+                                                             fold=args.fold, total_folds = args.total_folds)
+        tr_dataset = ReconDatasetd(tr_x[:30], transform=recon_transformd())  # do not need tr_y
+        vd_dataset = ReconDatasetd(vd_x[:10], transform=recon_transformd())
+        ts_dataset = ReconDatasetd(ts_x[:10], transform=recon_transformd())
+        sampler = None
+
+
+    #
+    # if args.r_c == "c":  # classification target
+    #     if args.cls == "disext":
+    #         tr_y, vd_y, ts_y = get_column(0, tr_y), get_column(0, vd_y), get_column(0, ts_y)
+    #     elif args.cls == "gg":
+    #         tr_y, vd_y, ts_y = get_column(1, tr_y), get_column(1, vd_y), get_column(1, ts_y)
+    #     elif args.cls == "retp":
+    #         tr_y, vd_y, ts_y = get_column(2, tr_y), get_column(2, vd_y), get_column(2, ts_y)
+    #     else:
+    #         raise Exception("Wrong args.cls: ", args.cls)
+
+    else:
         tr_x, tr_y, vd_x, vd_y, ts_x, ts_y = prepare_data(mypath)
+        # if args.synthesis_data and (not args.sampler):
+        #     tr_dataset = SynthesisDataset(tr_x, tr_y, transform=get_transformd())
+        #     vd_dataset = SynthesisDataset(vd_x, vd_y, transform=get_transformd())
+        #     ts_dataset = SynthesisDataset(ts_x, ts_y, transform=get_transformd())
+        #     sampler = None
+        # elif (not args.synthesis_data) and args.sampler:
+        tr_dataset = SynthesisDataset(tr_x, tr_y, transform=ssc_transformd())
+        vd_dataset = SynthesisDataset(vd_x, vd_y, transform=ssc_transformd())
+        ts_dataset = SynthesisDataset(ts_x, ts_y, transform=ssc_transformd())
+        sampler = sampler_by_disext(tr_y) if args.sampler else None
 
-        if args.r_c == "c":  # classification target
-            if args.cls == "disext":
-                tr_y, vd_y, ts_y = get_column(0, tr_y), get_column(0, vd_y), get_column(0, ts_y)
-            elif args.cls == "gg":
-                tr_y, vd_y, ts_y = get_column(1, tr_y), get_column(1, vd_y), get_column(1, ts_y)
-            elif args.cls == "retp":
-                tr_y, vd_y, ts_y = get_column(2, tr_y), get_column(2, vd_y), get_column(2, ts_y)
-            else:
-                raise Exception("Wrong args.cls: ", args.cls)
+        # else:
+        #     raise Exception("synthesis_data can not be set with sampler !")
 
-        if args.synthesis_data and (not args.sampler):
-            tr_dataset = SynthesisDataset(tr_x, tr_y, transform=get_transformd('train'))
-            vd_dataset = SynthesisDataset(vd_x, vd_y, transform=get_transformd())
-            ts_dataset = SynthesisDataset(ts_x, ts_y, transform=get_transformd())
-            sampler = None
-        elif (not args.synthesis_data) and args.sampler:
-            tr_dataset = SScScoreDataset(tr_x, tr_y, transform=get_transform('train'))
-            vd_dataset = SScScoreDataset(vd_x, vd_y, transform=get_transform())
-            ts_dataset = SScScoreDataset(ts_x, ts_y, transform=get_transform())
-            sampler = sampler_by_disext(tr_y)
+    batch_size = 10
+    log_dict['batch_size'] = batch_size
+    workers = 10
+    log_dict['loader_workers'] = workers
+    train_dataloader = DataLoader(tr_dataset, batch_size=batch_size, shuffle=False, num_workers=workers,
+                                  sampler=sampler)
+    valid_dataloader = DataLoader(vd_dataset, batch_size=batch_size, shuffle=False, num_workers=workers)
+    # valid_dataloader = train_dataloader
+    test_dataloader = DataLoader(ts_dataset, batch_size=batch_size, shuffle=False, num_workers=workers)
 
-        else:
-            raise Exception("synthesis_data can not be set with sampler !")
+    net = net.to(device)
+    print('move net t device')
+    if args.eval_id:
+        mypath2 = Path(args.eval_id)
+        shutil.copy(mypath2.model_fpath, mypath.model_fpath)  # make sure there is at least one model there
+        for mo in ['train', 'valid', 'test']:
+            shutil.copy(mypath2.loss(mo), mypath.loss(mo))  # make sure there is at least one model there
 
-        batch_size = 10
-        log_dict['batch_size'] = batch_size
-        workers = 10
-        log_dict['loader_workers'] = workers
-        train_dataloader = DataLoader(tr_dataset, batch_size=batch_size, shuffle=False, num_workers=workers,
-                                      sampler=sampler)
-        valid_dataloader = DataLoader(vd_dataset, batch_size=batch_size, shuffle=False, num_workers=workers)
-        # valid_dataloader = train_dataloader
-        test_dataloader = DataLoader(ts_dataset, batch_size=batch_size, shuffle=False, num_workers=workers)
+        net.load_state_dict(torch.load(mypath.model_fpath, map_location=device))
+        valid_mae_best = get_mae_best(mypath2.loss('valid'))
+        print(f'load model from {mypath2.model_fpath}, valid_mae_best is {valid_mae_best}')
+    else:
+        valid_mae_best = 10000
 
-        net = net.to(device)
-        if args.eval_id:
-            mypath2 = Path(args.eval_id)
-            shutil.copy(mypath2.model_fpath, mypath.model_fpath)  # make sure there is at least one model there
-            for mo in ['train', 'valid', 'test']:
-                shutil.copy(mypath2.loss(mo), mypath.loss(mo))  # make sure there is at least one model there
+    loss_fun = get_loss(args)
+    loss_fun_mae = nn.L1Loss()
+    lr = 1e-4
+    log_dict['lr'] = lr
+    opt = torch.optim.Adam(net.parameters(), lr=lr, weight_decay=args.weight_decay)
 
-            net.load_state_dict(torch.load(mypath.model_fpath, map_location=device))
-            valid_mae_best = get_mae_best(mypath2.loss('valid'))
-            print(f'load model from {mypath2.model_fpath}, valid_mae_best is {valid_mae_best}')
-        else:
-            valid_mae_best = 10000
+    scaler = torch.cuda.amp.GradScaler() if amp else None
+    epochs = 1 if args.mode == 'infer' else args.epochs
+    for i in range(epochs):  # 20000 epochs
+        if args.mode in ['train', 'continue_train']:
+            start_run('train', net, train_dataloader, amp, epochs, device, loss_fun, loss_fun_mae, opt, scaler,
+                      mypath,
+                      i)
+        # run the validation
+        valid_mae_best = start_run('valid', net, valid_dataloader, amp, epochs, device, loss_fun, loss_fun_mae, opt,
+                                   scaler, mypath, i, valid_mae_best)
+        start_run('test', net, test_dataloader, amp, epochs, device, loss_fun, loss_fun_mae, opt, scaler, mypath, i)
 
-        loss_fun = get_loss(args)
-        loss_fun_mae = nn.L1Loss()
-        lr = 1e-4
-        log_dict['lr'] = lr
-        opt = torch.optim.Adam(net.parameters(), lr=lr, weight_decay=args.weight_decay)
-
-        scaler = torch.cuda.amp.GradScaler() if amp else None
-        epochs = 1 if args.mode == 'infer' else args.epochs
-        for i in range(epochs):  # 20000 epochs
-            if args.mode in ['train', 'continue_train']:
-                start_run('train', net, train_dataloader, amp, epochs, device, loss_fun, loss_fun_mae, opt, scaler, mypath,
-                          i)
-            # run the validation
-            valid_mae_best = start_run('valid', net, valid_dataloader, amp, epochs, device, loss_fun, loss_fun_mae, opt,
-                                       scaler, mypath, i, valid_mae_best)
-            start_run('test', net, test_dataloader, amp, epochs, device, loss_fun, loss_fun_mae, opt, scaler, mypath, i)
-
-        record_best_preds(net, train_dataloader, valid_dataloader, test_dataloader, mypath, device, amp)
+    record_best_preds(net, train_dataloader, valid_dataloader, test_dataloader, mypath, device, amp)
     for mode in ['train', 'valid', 'test']:
         if args.eval_id:
             mypath2 = Path(args.eval_id)
@@ -1336,7 +1573,7 @@ def train(id_: int):
 
         out_dt = confusion.confusion(mypath.label(mode), mypath.pred_end5(mode))
         log_dict.update(out_dt)
-        icc_ = icc(mypath.label(mode), mypath.pred_end5(mode))
+        icc_ = futil.icc(mypath.label(mode), mypath.pred_end5(mode))
         log_dict.update(icc_)
         log_dict.update(icc_)
 
@@ -1383,10 +1620,10 @@ def record_preds(mode, batch_y, pred, mypath):
     batch_preds_end5 = batch_preds_end5.astype('Int64')
 
     head = ['disext', 'gg', 'retp']
-    appendrows_to(mypath.label(mode), batch_label, head=head)
-    appendrows_to(mypath.pred(mode), batch_preds, head=head)
-    appendrows_to(mypath.pred_int(mode), batch_preds_int, head=head)
-    appendrows_to(mypath.pred_end5(mode), batch_preds_end5, head=head)
+    futil.appendrows_to(mypath.label(mode), batch_label, head=head)
+    futil.appendrows_to(mypath.pred(mode), batch_preds, head=head)
+    futil.appendrows_to(mypath.pred_int(mode), batch_preds_int, head=head)
+    futil.appendrows_to(mypath.pred_end5(mode), batch_preds_end5, head=head)
 
 
 def fill_running(df: pd.DataFrame):
@@ -1444,10 +1681,9 @@ def record_experiment(record_file: str, current_id: Optional[int] = None):
                         try:
                             df.at[new_id - 1, key] = value  #
                         except ValueError:  # some times, the old values are NAN, so the whole columns is float64,
-                            #it will raise error if we put a string to float64 cell
+                            # it will raise error if we put a string to float64 cell
                             df[key] = df[key].astype(object)
                             df.at[new_id - 1, key] = value
-
 
                 df = fill_running(df)
                 df = correct_type(df)
@@ -1494,8 +1730,13 @@ def record_experiment(record_file: str, current_id: Optional[int] = None):
                         for mo in ['train', 'valid', 'test']:
                             shutil.copy(mypath2.loss(mo), mypath.loss(mo))
                         loss_df = pd.read_csv(mypath.loss(mode))
-                    best_index = loss_df['mae_end5'].idxmin()
-                    log_dict['metrics_min'] = 'mae_end5'
+
+                    if args.train_recon:
+                        best_index = loss_df['mae'].idxmin()
+                        log_dict['metrics_min'] = 'mae'
+                    else:
+                        best_index = loss_df['mae_end5'].idxmin()
+                        log_dict['metrics_min'] = 'mae_end5'
                     loss = loss_df['loss'][best_index]
                     mae = loss_df['mae'][best_index]
                     mae_end5 = loss_df['mae_end5'][best_index]
