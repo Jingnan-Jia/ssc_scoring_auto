@@ -63,7 +63,7 @@ class SmallNet_pos(nn.Module):
 
 
 def get_net_pos(name: str, nb_cls: int):
-    if name == 'conv3fc1':
+    if name == 'cnn3fc1':
         net = SmallNet_pos(num_classes=5)
     else:
         raise Exception('wrong net name', name)
@@ -273,9 +273,9 @@ class CenterCropPosd:
         d = dict(data)
         img_shape = d['image_key'].shape
         # print(f'img_shape: {img_shape}')
-        assert img_shape[0] >= self.x_size
+        assert img_shape[0] >= self.z_size
         assert img_shape[1] >= self.y_size
-        assert img_shape[2] >= self.z_size
+        assert img_shape[2] >= self.x_size
         middle_point = [shape // 2 for shape in img_shape]
         start = [middle_point[0] - self.z_size // 2, middle_point[1] - self.y_size // 2,
                  middle_point[2] - self.y_size // 2]
@@ -294,14 +294,13 @@ class RandomCropPosd:
         d = dict(data)
         # if 'image_key' in data:
         img_shape = d['image_key'].shape  # shape order: z,y x
-        assert img_shape[0] >= self.x_size
+        assert img_shape[0] >= self.z_size
         assert img_shape[1] >= self.y_size
-        assert img_shape[2] >= self.z_size
+        assert img_shape[2] >= self.x_size
 
         valid_range = (img_shape[0] - self.z_size, img_shape[1] - self.y_size, img_shape[2] - self.x_size)
         start = [random.randint(0, v_range) for v_range in valid_range]
         d = shiftd(d, start, self.z_size, self.y_size, self.x_size)
-
         return d
 
 
@@ -389,15 +388,13 @@ def record_GPU_info():
     return None
 
 
-
-
 def split_dir_pats(data_dir, label_file, ts_id):
     abs_dir_path = os.path.dirname(os.path.realpath(__file__))  # abosolute path of the current .py file
     data_dir = abs_dir_path + "/" + data_dir
 
-    dir_pats = sorted(glob.glob(os.path.join(data_dir, "Pat_*CTimage.mha")))
+    dir_pats = sorted(glob.glob(os.path.join(data_dir, "Pat_*CTimage*.mha")))
     if len(dir_pats)==0:
-        dir_pats = sorted(glob.glob(os.path.join(data_dir, "Pat_*", "CTimage.mha")))
+        dir_pats = sorted(glob.glob(os.path.join(data_dir, "Pat_*", "CTimage*.mha")))
 
     label_excel = pd.read_excel(label_file, engine='openpyxl')
 
@@ -661,7 +658,17 @@ def train(id: int):
 
     net = get_net_pos(args.net, 5)
 
-    data_dir: str = "dataset/LowResolution_fix_size"
+    if args.resample_z == 256:
+        data_dir: str = "dataset/LowResolution_fix_size"
+    elif args.resample_z == 512:
+        data_dir: str = "dataset/LowRes512_192_192"
+    elif args.resample_z == 800:
+        data_dir: str = "dataset/LowRes800_160_160"
+    elif args.resample_z == 1024:
+        data_dir: str = "dataset/LowRes1024_128_128"
+    else:
+        raise Exception("wrong resample_z:" + str(args.resample_z))
+
     label_file: str = "dataset/SSc_DeepLearning/GohScores.xlsx"
     kfold_seed: int = 49
 
@@ -675,8 +682,8 @@ def train(id: int):
     log_dict['ts_pat_nb'] = len(ts_x)
 
     tr_dataset = SScScoreDataset(data_x_names=tr_x, world_list=tr_y, transform=get_transformd('train'))
-    vd_dataset = SScScoreDataset(data_x_names=vd_x, world_list=vd_y, transform=get_transformd())
-    ts_dataset = SScScoreDataset(data_x_names=ts_x, world_list=ts_y, transform=get_transformd())
+    vd_dataset = SScScoreDataset(data_x_names=vd_x, world_list=vd_y, transform=get_transformd('train')) # have comparible learning curve
+    ts_dataset = SScScoreDataset(data_x_names=ts_x, world_list=ts_y, transform=get_transformd('train'))
 
     workers = 5
     log_dict['loader_workers'] = workers

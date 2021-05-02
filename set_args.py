@@ -8,16 +8,16 @@ import argparse
 
 parser = argparse.ArgumentParser(description="SSc score prediction.")
 
-parser.add_argument('--mode', choices=('train', 'infer', 'continue_train'), help='mode', type=str, default='train')
-parser.add_argument('--eval_id', help='id used for inference, or continue_train', type=int, default=0)
-parser.add_argument('--train_recon', choices=(1, 0), help='if synthesis_data?', type=int, default=1)
+parser.add_argument('--mode', choices=('train', 'infer', 'continue_train', 'transfer_learning'), help='mode', type=str, default='transfer_learning')
+parser.add_argument('--eval_id', help='id used for inference, or continue_train', type=int, default=945)
+parser.add_argument('--train_recon', choices=(1, 0), help='if use ReconNet and the dataset for ReconNet', type=int, default=0)
 
 parser.add_argument('--net', choices=('vgg11_bn', 'cnn3fc1', 'cnn2fc1', 'vgg16', 'vgg19','resnet18', 'resnext50_32x4d', 'resnext101_32x8d'), help='network name', type=str,
                     default='vgg11_bn')
 parser.add_argument('--fc2_nodes', help='the number of nodes of fc2 layer, original is 4096', type=int, default=1024)
 parser.add_argument('--fc1_nodes', help='the number of nodes of fc2 layer, original is 4096', type=int, default=1024)
 parser.add_argument('--r_c', choices=('r', 'c'), help='regression or classification?', type=str, default='r')
-parser.add_argument('--fc_m1', help='the number of nodes of last layer', type=int, default=512)
+parser.add_argument('--fc_m1', help='the number of nodes of last layer', type=int, default=256)
 
 parser.add_argument('--cls', choices=("disext", "gg", "rept"), help='classification target', type=str, default='disext')
 
@@ -28,7 +28,7 @@ parser.add_argument('--sampler', choices=(1, 0), help='if customer sampler?', ty
 parser.add_argument('--synthesis_data', choices=(1, 0), help='if synthesis_data?', type=int, default=0)
 
 parser.add_argument('--ts_level_nb', choices=(235, 240), help='if customer sampler?', type=int, default=240)
-parser.add_argument('--masked_by_lung', choices=(1, 0), help='if slices are masked by lung masks', type=int, default=0)
+parser.add_argument('--masked_by_lung', choices=(1, 0), help='if slices are masked by lung masks', type=int, default=1)
 
 parser.add_argument('--loss', choices=('mse', 'mae', 'smooth_mae', 'mse+mae', 'msehigher'), help='mode', type=str,
                     default='mse')
@@ -42,6 +42,8 @@ parser.add_argument('--remark', help='comments on this experiment', type=str)
 
 args = parser.parse_args()
 
-
-
+if (args.mode != 'train') and (args.eval_id == 0):
+    parser.error("Please provide valid eval_id if the mode is: " + args.mode)
+if args.mode == "infer":
+    args.epochs = 0
 

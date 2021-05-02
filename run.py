@@ -320,49 +320,10 @@ class Cnn2fc1(nn.Module):
         self.avgpool = nn.AdaptiveAvgPool2d((6, 6))
         self.classifier = nn.Sequential(
             nn.Dropout(),
-            nn.Linear(128 * 6 * 6, 256),
+            nn.Linear(128 * 6 * 6, args.fc_m1),
             nn.ReLU(inplace=True),
             nn.Dropout(),
-            nn.Linear(256, num_classes),
-        )
-
-    def forward(self, x):
-        x = self.features(x)
-        x = self.avgpool(x)
-        x = torch.flatten(x, 1)
-        x = self.classifier(x)
-        return x
-
-
-class Cnn2fc1_with_shape(nn.Module):
-
-    def __init__(self, num_classes=1000, input_len=512):
-        super().__init__()
-        # self.cn_1_dict = {"in_chn":3, "out_chn":64, "kernel_size":11, "stride":4, "padding":2}
-        # self.cn_2_dict = {"in_chn":64, "out_chn":128, "kernel_size":5, "stride":1, "padding":2}
-        #
-        #
-        # log_dict.update("cn_1_dict":self.cn_1_dict)
-
-        self.features = nn.Sequential(
-            nn.Conv2d(3, 64, kernel_size=11, stride=4, padding=2),
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=3, stride=2),
-            nn.Conv2d(64, 128, kernel_size=5, padding=2),
-            nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=3, stride=2),
-
-        )
-
-        self.avgpool = nn.AdaptiveAvgPool2d((6, 6))
-        self.classifier = nn.Sequential(
-            nn.Dropout(),
-            nn.Linear(128 * 6 * 6, 256),
-            nn.ReLU(inplace=True),
-            nn.Dropout(),
-            nn.Linear(256, num_classes),
+            nn.Linear(args.fc_m1, num_classes),
         )
 
     def forward(self, x):
@@ -688,79 +649,81 @@ class ReconDatasetd(Dataset):
         return data
 
 
-class SScScoreDataset(Dataset):
-    """SSc scoring dataset."""
-
-    def __init__(self, data_x_names, data_y_list, index: List = None, transform=None):
-
-        self.data_x_names, self.data_y_list = np.array(data_x_names), np.array(data_y_list)
-        lenth = len(self.data_x_names)
-        if index is not None:
-            self.data_x_names = self.data_x_names[index]
-            self.data_y_list = self.data_y_list[index]
-        print('loading data ...')
-        self.data_x = [futil.load_itk(x, require_ori_sp=True) for x in self.data_x_names]
-        self.data_x_np = [i[0] for i in self.data_x]
-        normalize0to1 = ScaleIntensityRange(a_min=-1500.0, a_max=1500.0, b_min=0.0, b_max=1.0, clip=True)
-
-        self.data_x_np = [normalize0to1(x_np) for x_np in self.data_x_np]
-        # scale data to 0~1, it's convinent for future transform during dataloader
-        self.data_x_or_sp = [[i[1], i[2]] for i in self.data_x]
-
-        # self.data_x_np = [normalize(x) for x in self.data_x_np]
-
-        # log_dict['normalize_data'] = True
-
-        self.data_x_np = [x.astype(np.float32) for x in self.data_x_np]
-        self.data_y_np = [y.astype(np.float32) for y in self.data_y_list]
-        # self.min = [np.min(x) for x in self.data_x_np]
-        self.data_x_np = [np.pad(x, pad_width=((128, 128), (128, 128)), mode='constant') for x in self.data_x_np]
-        self.data_x_tensor = [torch.as_tensor(x) for x in self.data_x_np]
-        self.data_y_tensor = [torch.as_tensor(y) for y in self.data_y_np]
-
-        # self.min_value = [torch.min(x).item() for x in self.data_x_tensor]  # min values after normalization
-        # self.data_x_tensor = [functional.pad(x, padding=[128, 128], fill=min) for x, min in zip(self.data_x_tensor, self.min_value)]
-
-        self.transform = transform
-
-    def __len__(self):
-        return len(self.data_y_tensor)
-
-    def __getitem__(self, idx):
-        if torch.is_tensor(idx):
-            idx = idx.tolist()
-
-        image = self.data_x_tensor[idx]
-        label = self.data_y_tensor[idx]
-
-        check_aug_effect = 0
-
-        if check_aug_effect and self.transform:
-            img_fpath = self.data_x_names[idx]
-            image_origin, image_spacing = self.data_x_or_sp[idx]
-
-            image_origin = np.append(image_origin, 1)
-            image_spacing = np.append(image_spacing, 1)
-
-            print(img_fpath)
-
-            def crop_center(img, cropx, cropy):
-                y, x = img.shape
-                startx = x // 2 - (cropx // 2)
-                starty = y // 2 - (cropy // 2)
-                return img[starty:starty + cropy, startx:startx + cropx]
-
-            img_before_aug = crop_center(image.numpy(), 512, 512)
-            futil.save_itk('aug_before_' + img_fpath.split('/')[-1],
-                           img_before_aug, image_origin, image_spacing, dtype='float')
-
-            image = self.transform(image)
-            futil.save_itk('aug_after_' + img_fpath.split('/')[-1],
-                           image.numpy(), image_origin, image_spacing, dtype='float')
-        if self.transform:
-            image = self.transform(image)
-
-        return image, label
+# class SScScoreDataset(Dataset):
+#     """SSc scoring dataset."""
+#
+#     def __init__(self, data_x_names, data_y_list, index: List = None, transform=None):
+#
+#         self.data_x_names, self.data_y_list = np.array(data_x_names), np.array(data_y_list)
+#         lenth = len(self.data_x_names)
+#         if index is not None:
+#             self.data_x_names = self.data_x_names[index]
+#             self.data_y_list = self.data_y_list[index]
+#         print('loading data ...')
+#         self.data_x = [futil.load_itk(x, require_ori_sp=True) for x in tqdm(self.data_x_names)]
+#         self.data_x_np = [i[0] for i in self.data_x]
+#         normalize0to1 = ScaleIntensityRange(a_min=-1500.0, a_max=1500.0, b_min=0.0, b_max=1.0, clip=True)
+#
+#         print('normalizing data')
+#         self.data_x_np = [normalize0to1(x_np) for x_np in tqdm(self.data_x_np)]
+#         # scale data to 0~1, it's convinent for future transform during dataloader
+#         self.data_x_or_sp = [[i[1], i[2]] for i in self.data_x]
+#
+#         # self.data_x_np = [normalize(x) for x in self.data_x_np]
+#
+#         # log_dict['normalize_data'] = True
+#
+#         self.data_x_np = [x.astype(np.float32) for x in self.data_x_np]
+#         self.data_y_np = [y.astype(np.float32) for y in self.data_y_list]
+#         # self.min = [np.min(x) for x in self.data_x_np]
+#         # print("padding")
+#         # self.data_x_np = [np.pad(x, pad_width=((128, 128), (128, 128)), mode='constant') for x in tqdm(self.data_x_np)]
+#         self.data_x_tensor = [torch.as_tensor(x) for x in self.data_x_np]
+#         self.data_y_tensor = [torch.as_tensor(y) for y in self.data_y_np]
+#
+#         # self.min_value = [torch.min(x).item() for x in self.data_x_tensor]  # min values after normalization
+#         # self.data_x_tensor = [functional.pad(x, padding=[128, 128], fill=min) for x, min in zip(self.data_x_tensor, self.min_value)]
+#
+#         self.transform = transform
+#
+#     def __len__(self):
+#         return len(self.data_y_tensor)
+#
+#     def __getitem__(self, idx):
+#         if torch.is_tensor(idx):
+#             idx = idx.tolist()
+#
+#         image = self.data_x_tensor[idx]
+#         label = self.data_y_tensor[idx]
+#
+#         check_aug_effect = 0
+#
+#         if check_aug_effect and self.transform:
+#             img_fpath = self.data_x_names[idx]
+#             image_origin, image_spacing = self.data_x_or_sp[idx]
+#
+#             image_origin = np.append(image_origin, 1)
+#             image_spacing = np.append(image_spacing, 1)
+#
+#             print(img_fpath)
+#
+#             def crop_center(img, cropx, cropy):
+#                 y, x = img.shape
+#                 startx = x // 2 - (cropx // 2)
+#                 starty = y // 2 - (cropy // 2)
+#                 return img[starty:starty + cropy, startx:startx + cropx]
+#
+#             img_before_aug = crop_center(image.numpy(), 512, 512)
+#             futil.save_itk('aug_before_' + img_fpath.split('/')[-1],
+#                            img_before_aug, image_origin, image_spacing, dtype='float')
+#
+#             image = self.transform(image)
+#             futil.save_itk('aug_after_' + img_fpath.split('/')[-1],
+#                            image.numpy(), image_origin, image_spacing, dtype='float')
+#         if self.transform:
+#             image = self.transform(image)
+#
+#         return image, label
 
 
 class SynthesisDataset(Dataset):
@@ -773,11 +736,11 @@ class SynthesisDataset(Dataset):
             self.data_x_names = self.data_x_names[index]
             self.data_y_list = self.data_y_list[index]
         print('loading data ...')
-        self.data_x = [futil.load_itk(x, require_ori_sp=True) for x in self.data_x_names]
+        self.data_x = [futil.load_itk(x, require_ori_sp=True) for x in tqdm(self.data_x_names)]
         self.data_x_np = [i[0] for i in self.data_x]
         normalize0to1 = ScaleIntensityRange(a_min=-1500.0, a_max=1500.0, b_min=0.0, b_max=1.0, clip=True)
-
-        self.data_x_np = [normalize0to1(x_np) for x_np in self.data_x_np]
+        print('normalizing data')
+        self.data_x_np = [normalize0to1(x_np) for x_np in tqdm(self.data_x_np)]
         # scale data to 0~1, it's convinent for future transform during dataloader
         self.data_x_or_sp = [[i[1], i[2]] for i in self.data_x]
         self.ori = np.array([i[1] for i in self.data_x])  # shape order: z, y, x
@@ -790,7 +753,7 @@ class SynthesisDataset(Dataset):
         self.data_x_np = [x.astype(np.float32) for x in self.data_x_np]
         self.data_y_np = [y.astype(np.float32) for y in self.data_y_list]
         # self.min = [np.min(x) for x in self.data_x_np]
-        self.data_x_np = [np.pad(x, pad_width=((128, 128), (128, 128)), mode='constant') for x in self.data_x_np]
+        # self.data_x_np = [np.pad(x, pad_width=((128, 128), (128, 128)), mode='constant') for x in self.data_x_np]
         self.data_x_tensor = [torch.as_tensor(x) for x in self.data_x_np]
         self.data_y_tensor = [torch.as_tensor(y) for y in self.data_y_np]
 
@@ -814,9 +777,6 @@ class SynthesisDataset(Dataset):
 
         if self.transform:
             data = self.transform(data)
-        # data['image_key'] = torch.as_tensor(data['image_key'])
-        # data['label_key'] = torch.as_tensor(data['label_key'])
-
         return data
 
 
@@ -939,7 +899,7 @@ class Path:
         self.data_dir = 'dataset'
 
         self.id_dir = os.path.join(self.model_dir, str(int(id)))  # +'_fold_' + str(args.fold)
-        if args.mode == 'train' and check_id_dir:  # when infer, do not check
+        if check_id_dir:  # when infer, do not check
             if os.path.isdir(self.id_dir):  # the dir for this id already exist
                 raise Exception('The same id_dir already exists', self.id_dir)
 
@@ -1183,6 +1143,8 @@ def start_run(mode, net, dataloader, amp, epochs, device, loss_fun, loss_fun_mae
             batch_x, batch_y = data['image_key'], data['image_key']
         else:
             batch_x, batch_y = data['image_key'], data['label_key']
+            print('batch_y is: ')
+            print(batch_y)
 
         batch_x = batch_x.to(device)
         batch_y = batch_y.to(device)
@@ -1465,7 +1427,6 @@ def get_loss(args):
 
 def train(id_: int):
     mypath = Path(id_)
-    # if args.eval_id != 0 or args.mode == 'train':
     if torch.cuda.is_available():
         device = torch.device("cuda")
         amp = True
@@ -1475,7 +1436,7 @@ def train(id_: int):
     log_dict['amp'] = amp
 
     net = get_net(args.net, 3) if args.r_c == "r" else get_net(args.net, 21)
-    if args.train_recon:
+    if args.train_recon:  # use ReconNet and corresponding dataset
         net = ReconNet(net)
 
         data_dir: str = "dataset/SSc_DeepLearning"
@@ -1488,31 +1449,13 @@ def train(id_: int):
         vd_dataset = ReconDatasetd(vd_x[:10], transform=recon_transformd())
         ts_dataset = ReconDatasetd(ts_x[:10], transform=recon_transformd())
         sampler = None
-
-
-    #
-    # if args.r_c == "c":  # classification target
-    #     if args.cls == "disext":
-    #         tr_y, vd_y, ts_y = get_column(0, tr_y), get_column(0, vd_y), get_column(0, ts_y)
-    #     elif args.cls == "gg":
-    #         tr_y, vd_y, ts_y = get_column(1, tr_y), get_column(1, vd_y), get_column(1, ts_y)
-    #     elif args.cls == "retp":
-    #         tr_y, vd_y, ts_y = get_column(2, tr_y), get_column(2, vd_y), get_column(2, ts_y)
-    #     else:
-    #         raise Exception("Wrong args.cls: ", args.cls)
-
     else:
         tr_x, tr_y, vd_x, vd_y, ts_x, ts_y = prepare_data(mypath)
-        # if args.synthesis_data and (not args.sampler):
-        #     tr_dataset = SynthesisDataset(tr_x, tr_y, transform=get_transformd())
-        #     vd_dataset = SynthesisDataset(vd_x, vd_y, transform=get_transformd())
-        #     ts_dataset = SynthesisDataset(ts_x, ts_y, transform=get_transformd())
-        #     sampler = None
-        # elif (not args.synthesis_data) and args.sampler:
         tr_dataset = SynthesisDataset(tr_x, tr_y, transform=ssc_transformd())
         vd_dataset = SynthesisDataset(vd_x, vd_y, transform=ssc_transformd())
         ts_dataset = SynthesisDataset(ts_x, ts_y, transform=ssc_transformd())
         sampler = sampler_by_disext(tr_y) if args.sampler else None
+        print(f'sampler is {sampler}')
 
         # else:
         #     raise Exception("synthesis_data can not be set with sampler !")
@@ -1527,19 +1470,31 @@ def train(id_: int):
     # valid_dataloader = train_dataloader
     test_dataloader = DataLoader(ts_dataset, batch_size=batch_size, shuffle=False, num_workers=workers)
 
-    net = net.to(device)
-    print('move net t device')
+
     if args.eval_id:
         mypath2 = Path(args.eval_id)
-        shutil.copy(mypath2.model_fpath, mypath.model_fpath)  # make sure there is at least one model there
-        for mo in ['train', 'valid', 'test']:
-            shutil.copy(mypath2.loss(mo), mypath.loss(mo))  # make sure there is at least one model there
+        if args.mode == "transfer_learning":
+            net_recon = ReconNet(net)
+            net_recon.load_state_dict(torch.load(mypath2.model_fpath, map_location=torch.device("cpu")))
+            net.features = copy.deepcopy(net_recon.features)  # only use the pretrained features
+            del net_recon
+            valid_mae_best = 10000
 
-        net.load_state_dict(torch.load(mypath.model_fpath, map_location=device))
-        valid_mae_best = get_mae_best(mypath2.loss('valid'))
-        print(f'load model from {mypath2.model_fpath}, valid_mae_best is {valid_mae_best}')
+        elif args.mode in ["continue_train", "infer"]:
+            shutil.copy(mypath2.model_fpath, mypath.model_fpath)  # make sure there is at least one model there
+            for mo in ['train', 'valid', 'test']:
+                shutil.copy(mypath2.loss(mo), mypath.loss(mo))  # make sure there is at least one model there
+
+            net.load_state_dict(torch.load(mypath.model_fpath, map_location=torch.device("cpu")))
+            valid_mae_best = get_mae_best(mypath2.loss('valid'))
+            print(f'load model from {mypath2.model_fpath}, valid_mae_best is {valid_mae_best}')
+        else:
+            raise Exception("wrong mode: " + args.mode)
     else:
         valid_mae_best = 10000
+
+    net = net.to(device)
+    print('move net t device')
 
     loss_fun = get_loss(args)
     loss_fun_mae = nn.L1Loss()
@@ -1548,12 +1503,9 @@ def train(id_: int):
     opt = torch.optim.Adam(net.parameters(), lr=lr, weight_decay=args.weight_decay)
 
     scaler = torch.cuda.amp.GradScaler() if amp else None
-    epochs = 1 if args.mode == 'infer' else args.epochs
+    epochs = args.epochs
     for i in range(epochs):  # 20000 epochs
-        if args.mode in ['train', 'continue_train']:
-            start_run('train', net, train_dataloader, amp, epochs, device, loss_fun, loss_fun_mae, opt, scaler,
-                      mypath,
-                      i)
+        start_run('train', net, train_dataloader, amp, epochs, device, loss_fun, loss_fun_mae, opt, scaler, mypath, i)
         # run the validation
         valid_mae_best = start_run('valid', net, valid_dataloader, amp, epochs, device, loss_fun, loss_fun_mae, opt,
                                    scaler, mypath, i, valid_mae_best)
@@ -1561,7 +1513,7 @@ def train(id_: int):
 
     record_best_preds(net, train_dataloader, valid_dataloader, test_dataloader, mypath, device, amp)
     for mode in ['train', 'valid', 'test']:
-        if args.eval_id:
+        if args.mode == "infer" and args.eval_id:
             mypath2 = Path(args.eval_id)
             for mo in ['train', 'valid', 'test']:
                 shutil.copy(mypath2.data(mo), mypath.data(mo))  # make sure there is at least one model there
@@ -1571,11 +1523,12 @@ def train(id_: int):
                 shutil.copy(mypath2.pred_int(mo), mypath.pred_int(mo))  # make sure there is at least one model there
                 shutil.copy(mypath2.pred_end5(mo), mypath.pred_end5(mo))  # make sure there is at least one model there
 
-        out_dt = confusion.confusion(mypath.label(mode), mypath.pred_end5(mode))
-        log_dict.update(out_dt)
-        icc_ = futil.icc(mypath.label(mode), mypath.pred_end5(mode))
-        log_dict.update(icc_)
-        log_dict.update(icc_)
+        if args.train_recon == 0:
+            out_dt = confusion.confusion(mypath.label(mode), mypath.pred_end5(mode))
+            log_dict.update(out_dt)
+            icc_ = futil.icc(mypath.label(mode), mypath.pred_end5(mode))
+            log_dict.update(icc_)
+            log_dict.update(icc_)
 
 
 def record_best_preds(net, train_dataloader, valid_dataloader, test_dataloader, mypath, device, amp):
@@ -1585,7 +1538,14 @@ def record_best_preds(net, train_dataloader, valid_dataloader, test_dataloader, 
     for mode, dataloader in dataloader_dict.items():
         print("Start write pred to disk for ", mode)
         for data in dataloader:
-            batch_x, batch_y = data['image_key'], data['label_key']
+            if 'label_key' not in data:
+                batch_x, batch_y = data['image_key'], data['image_key']
+            else:
+                batch_x, batch_y = data['image_key'], data['label_key']
+
+            print('batch_y is: ')
+            print(batch_y)
+
             batch_x = batch_x.to(device)
             batch_y = batch_y.to(device)
             if args.r_c == "c":
@@ -1606,10 +1566,6 @@ def record_best_preds(net, train_dataloader, valid_dataloader, test_dataloader, 
                 batch_y = batch_y * 5  # convert back to original scores
 
             record_preds(mode, batch_y, pred, mypath)
-
-            if mode == 'train':
-                p1 = threading.Thread(target=record_GPU_info)
-                p1.start()
 
 
 def record_preds(mode, batch_y, pred, mypath):
