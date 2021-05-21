@@ -34,6 +34,10 @@ from tqdm import tqdm
 
 import confusion
 from set_args import args
+import cv2
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 
 LogType = Optional[Union[int, float, str]]  # int includes bool
 log_dict: Dict[str, LogType] = {}  # a global dict to store variables saved to log files
@@ -726,10 +730,10 @@ class ReconDatasetd(Dataset):
 #         return image, label
 
 
-class SynthesisDataset(Dataset):
+class SysDataset(Dataset):
     """SSc scoring dataset."""
 
-    def __init__(self, data_x_names, data_y_list, index: List = None, transform=None):
+    def __init__(self, data_x_names, data_y_list, index: List = None, transform=None, synthesis=False):
 
         self.data_x_names, self.data_y_list = np.array(data_x_names), np.array(data_y_list)
         if index is not None:
@@ -737,6 +741,14 @@ class SynthesisDataset(Dataset):
             self.data_y_list = self.data_y_list[index]
         print('loading data ...')
         self.data_x = [futil.load_itk(x, require_ori_sp=True) for x in tqdm(self.data_x_names)]
+        self.systhesis = synthesis
+        if self.systhesis:
+            mask_end = "_lung_mask"
+            self.lung_masks_names =  [x.split('.mha')[0]+ mask_end + ".mha" for x in tqdm(self.data_x_names)]
+
+            self.lung_masks = [futil.load_itk(x, require_ori_sp=False) for x in tqdm(self.lung_masks_names)]
+
+
         self.data_x_np = [i[0] for i in self.data_x]
         normalize0to1 = ScaleIntensityRange(a_min=-1500.0, a_max=1500.0, b_min=0.0, b_max=1.0, clip=True)
         print('normalizing data')
@@ -769,11 +781,17 @@ class SynthesisDataset(Dataset):
         if torch.is_tensor(idx):
             idx = idx.tolist()
 
+
         data = {'image_key': self.data_x_tensor[idx],
                 'label_key': self.data_y_tensor[idx],
                 'space_key': self.sp[idx],
                 'origin_key': self.ori[idx],
                 'fpath_key': self.data_x_names[idx]}
+
+        if self.systhesis:
+            new_dict = {'lung_mask_key': self.lung_masks[idx]}
+            data.update(new_dict)
+
 
         if self.transform:
             data = self.transform(data)
@@ -825,6 +843,240 @@ class MyNormalized(MapTransform):
             d[key] = self.norm(d[key])
         return d
 
+
+class SysthesisNewSampled(MapTransform):
+    def __init__(self, keys, retp_fpath):
+        super().__init__(keys)
+
+        self.retp_fpath = retp_fpath# retp will generated from its egg
+        self.retp_ori_image_fpath = retp_fpath.split('.mha')[0] + '_ori.mha'
+        retp_egg = futil.load_itk(self.retp_fpath)
+        retp_ori = futil.load_itk(self.retp_ori_image_fpath)
+        # normalize the egg using the original image information
+        retp_egg = (retp_egg - np.min(retp_ori)) / (np.max(retp_ori) - np.min(retp_ori))
+
+        retp_minnorv = np.vstack((np.flip(retp_egg), np.flip(retp_egg, 0)))
+        retp_minnorh = np.hstack((retp_minnorv, np.flip(retp_minnorv, 1)))
+
+
+        cell_size = retp_minnorh.shape
+        self.image_size = 512
+        nb_row, nb_col = self.image_size // cell_size[0]*2, self.image_size // cell_size[1]*2  # big mask for crop
+        retp_temp = np.hstack(([retp_minnorh] * nb_col))
+        self.retp_temp = np.vstack(([retp_temp] * nb_row))
+
+        self.random_affine = RandomAffine(degrees=180, translate=(0.1, 0.1), scale=(1 - 0.5, 1 + 0.1))
+        self.center_crop = CenterCrop(self.image_size)
+
+        self.retp_candidate = self.rand_affine_crop(self.retp_temp)
+        self.counter = 0
+        self.systh_y = []
+
+    def rand_affine_crop(self, retp_temp: np.ndarray):
+        retp_temp_tensor = torch.from_numpy(retp_temp[None])
+        retp_affina = self.random_affine(retp_temp_tensor)
+        retp_candidate = self.center_crop(retp_affina)
+        retp_candidate = torch.squeeze(retp_candidate).numpy()
+        return retp_candidate
+
+    def __call__(self, data):
+        d = dict(data)
+        if d['label_key'][0].item() == 0:
+            tmp = random.random()
+            if tmp > 0.5:
+                for key in self.keys:
+                    d[key], d['label_key'] = self.systhesis(d[key], d['lung_mask_key'])
+                    print("after systhesis, label is ",  d['label_key'])
+                    self.systh_y.append(d['label_key'])
+        return d
+
+    def random_mask(self, nb_ellipse):
+        fig_ = np.zeros((self.image_size, self.image_size))
+        startAngle = 0
+        endAngle = 360
+        # Blue color in BGR
+        color = 1
+        # Line thickness of -1 px
+        thickness = -1
+
+        # Using cv2.ellipse() method
+        # Draw a ellipse with blue line borders of thickness of -1 px
+        for i in range(nb_ellipse):
+            angle = random.randint(0, 180)
+            center_coordinates = (random.randint(0, self.image_size), random.randint(0, self.image_size))
+            axlen = random.randint(1, 100)
+            axesLength = (axlen, int(axlen * (1+random.random()) ))
+
+            image = cv2.ellipse(fig_, center_coordinates, axesLength, angle,
+                                startAngle, endAngle, color, thickness)
+            fig_ += image
+        fig_[fig_>0] = 1
+        return fig_
+
+
+    def systhesis(self, img: torch.Tensor, img_mask: np.ndarray):
+        img = img.numpy()
+        if type(img_mask) == torch.Tensor:
+            img_mask = img_mask.numpy()
+
+        self.counter += 1
+        if self.counter == 100:  # update self.retp_candidate
+            self.counter = 0
+            self.retp_candidate = self.rand_affine_crop(self.retp_temp)
+
+        fig, ax = plt.subplots()
+        ax.imshow(img, cmap='gray')
+        ax.axis('off')
+        fig.savefig('/data/jjia/ssc_scoring/image_samples/img_' + str(self.counter) + '.png')
+
+        fig, ax = plt.subplots()
+        ax.imshow(self.retp_candidate, cmap='gray')
+        ax.axis('off')
+        fig.savefig('/data/jjia/ssc_scoring/image_samples/retp_candidate_' + str(self.counter) + '.png')
+
+        rand_gg_mask = self.random_mask(3)
+        rand_retp_mask = self.random_mask(3)
+
+        fig, ax = plt.subplots()
+        ax.imshow(rand_gg_mask, cmap='gray')
+        ax.axis('off')
+        fig.savefig('/data/jjia/ssc_scoring/image_samples/rand_gg_mask_' + str(self.counter) + '.png')
+
+        fig, ax = plt.subplots()
+        ax.imshow(rand_retp_mask, cmap='gray')
+        ax.axis('off')
+        fig.savefig('/data/jjia/ssc_scoring/image_samples/rand_retp_mask_' + str(self.counter) + '.png')
+
+        fig, ax = plt.subplots()
+        ax.imshow(img_mask, cmap='gray')
+        ax.axis('off')
+        fig.savefig('/data/jjia/ssc_scoring/image_samples/img_mask_' + str(self.counter) + '.png')
+
+        rand_retp_mask *= img_mask
+        rand_gg_mask *= img_mask
+
+        fig, ax = plt.subplots()
+        ax.imshow(rand_gg_mask, cmap='gray')
+        ax.axis('off')
+        fig.savefig('/data/jjia/ssc_scoring/image_samples/rand_gg_mask_lung_' + str(self.counter) + '.png')
+
+        fig, ax = plt.subplots()
+        ax.imshow(rand_retp_mask, cmap='gray')
+        ax.axis('off')
+        fig.savefig('/data/jjia/ssc_scoring/image_samples/rand_retp_mask_lung_' + str(self.counter) + '.png')
+
+
+        union_mask = rand_gg_mask + rand_retp_mask
+        union_mask[union_mask>0] = 1
+
+        fig, ax = plt.subplots()
+        ax.imshow(union_mask, cmap='gray')
+        ax.axis('off')
+        fig.savefig('/data/jjia/ssc_scoring/image_samples/union_mask_' + str(self.counter) + '.png')
+
+        intersection_mask = rand_gg_mask * rand_retp_mask
+        gg_exclude_retp = rand_gg_mask - intersection_mask
+
+        fig, ax = plt.subplots()
+        ax.imshow(intersection_mask, cmap='gray')
+        ax.axis('off')
+        fig.savefig('/data/jjia/ssc_scoring/image_samples/intersection_mask_' + str(self.counter) + '.png')
+
+        fig, ax = plt.subplots()
+        ax.imshow(gg_exclude_retp, cmap='gray')
+        ax.axis('off')
+        fig.savefig('/data/jjia/ssc_scoring/image_samples/gg_exclude_retp_' + str(self.counter) + '.png')
+
+        lung_area = np.sum(img_mask)
+        total_dis_area = np.sum(union_mask)
+        gg_area = np.sum(rand_gg_mask)
+        retp_area = np.sum(rand_retp_mask)
+
+        y_disext = int(total_dis_area/lung_area * 100)
+        y_gg = int(gg_area/lung_area * 100)
+        y_retp = int(retp_area / lung_area * 100)
+
+        y = np.array([y_disext, y_gg, y_retp])
+        if np.sum(y)>0:
+            smooth_edge = 10
+            rand_retp_mask = cv2.blur(rand_retp_mask, (smooth_edge, smooth_edge))
+
+            fig, ax = plt.subplots()
+            ax.imshow(rand_retp_mask, cmap='gray')
+            ax.axis('off')
+            fig.savefig('/data/jjia/ssc_scoring/image_samples/rand_retp_mask_blur_' + str(self.counter) + '.png')
+
+            retp = rand_retp_mask * self.retp_candidate
+
+            fig, ax = plt.subplots()
+            ax.imshow(retp, cmap='gray')
+            ax.axis('off')
+            fig.savefig('/data/jjia/ssc_scoring/image_samples/retp_' + str(self.counter) + '.png')
+
+            img_exclude_retp_mask = (1 - rand_retp_mask) * img
+
+            fig, ax = plt.subplots()
+            ax.imshow(img_exclude_retp_mask, cmap='gray')
+            ax.axis('off')
+            fig.savefig('/data/jjia/ssc_scoring/image_samples/img_exclude_retp_mask_' + str(self.counter) + '.png')
+
+
+            img_wt_retp = retp + img_exclude_retp_mask
+
+            fig, ax = plt.subplots()
+            ax.imshow(img_wt_retp, cmap='gray')
+            ax.axis('off')
+            fig.savefig('/data/jjia/ssc_scoring/image_samples/img_wt_retp_' + str(self.counter) + '.png')
+
+            # rand_gg_mask = cv2.blur(rand_gg_mask, (smooth_edge, smooth_edge))
+            gg = rand_gg_mask * img_wt_retp
+
+            fig, ax = plt.subplots()
+            ax.imshow(gg, cmap='gray')
+            ax.axis('off')
+            fig.savefig('/data/jjia/ssc_scoring/image_samples/gg_' + str(self.counter) + '.png')
+
+            gg_exclude_retp_ = gg_exclude_retp * gg
+
+            fig, ax = plt.subplots()
+            ax.imshow(gg_exclude_retp_, cmap='gray')
+            ax.axis('off')
+            fig.savefig('/data/jjia/ssc_scoring/image_samples/gg_exclude_retp_' + str(self.counter) + '.png')
+
+            # gg = self.add_noise(gg)  # before blur, apply noise to increase the average HU value
+            gg[gg_exclude_retp>0] += 0.1  # increase HU value from -900 to -600 (300/3000=0.1)
+
+
+
+            fig, ax = plt.subplots()
+            ax.imshow(gg, cmap='gray')
+            ax.axis('off')
+            fig.savefig('/data/jjia/ssc_scoring/image_samples/gg_lighter_' + str(self.counter) + '.png')
+
+            gg = rand_gg_mask * gg
+            gg_blur = 3
+            gg = cv2.blur(gg, (gg_blur, gg_blur))
+
+            fig, ax = plt.subplots()
+            ax.imshow(gg, cmap='gray')
+            ax.axis('off')
+            fig.savefig('/data/jjia/ssc_scoring/image_samples/gg_lighter_blur_' + str(self.counter) + '.png')
+
+            img_exclude_gg_mask = (1 - rand_gg_mask) * img_wt_retp
+            img_wt_retp_gg = img_exclude_gg_mask + gg
+
+            fig, ax = plt.subplots()
+            ax.imshow(img_wt_retp_gg, cmap='gray')
+            ax.axis('off')
+            fig.savefig('/data/jjia/ssc_scoring/image_samples/img_wt_retp_gg_' + str(self.counter) + '.png')
+
+            return torch.from_numpy(img_wt_retp_gg.astype(np.float32)), torch.tensor(y.astype(np.float32))
+        else:
+            return torch.from_numpy(img.astype(np.float32)), torch.tensor(np.array([0,0,0]).astype(np.float32))
+    # def add_noise(self, img):
+    #     img =
+    #     gauss = np.random.normal(0, 1, img.size)
+    #     gauss = gauss.reshape(img.shape[0], img.shape[1], img.shape[2]).astype('uint8')
 
 
 class AddChannel:
@@ -978,7 +1230,7 @@ class RandomVerticalFlipd(MapTransform):
         return d
 
 
-def ssc_transformd(mode ='train'):
+def ssc_transformd(mode='train', synthesis=False):
     """
     The input image data is from 0 to 1.
     :param mode:
@@ -991,17 +1243,21 @@ def ssc_transformd(mode ='train'):
     horiflip = 0.5
     shift = 10 / 512
     scale = 0.05
-    xforms = [AddChanneld(keys)]
+
+    xforms = []
     if mode == 'train':
+        if synthesis:
+            xforms.append(SysthesisNewSampled(keys=keys, retp_fpath="/data/jjia/ssc_scoring/dataset/special_samples/retp.mha"))
         xforms.extend([
+            AddChanneld(keys),
             RandomAffined(keys=keys, degrees=rotation, translate=(shift, shift), scale=(1 - scale, 1 + scale)),
             # CenterCropd(image_size),
             RandomHorizontalFlipd(keys, p=horiflip),
             RandomVerticalFlipd(keys, p=vertflip),
             RandGaussianNoised(keys)
         ])
-    # else:
-    # xforms.append(CenterCropd(image_size))
+    else:
+        xforms.extend([AddChanneld(keys)])
 
     xforms.append(MyNormalized(keys))
 
@@ -1020,7 +1276,9 @@ def ssc_transformd(mode ='train'):
 
 def recon_transformd(mode='train'):
     keys = "image_key"  # only transform image
-    xforms = [AddChanneld(keys), RandomHorizontalFlipd(keys), RandomVerticalFlipd(keys)]
+    xforms = [AddChanneld(keys)]
+    if mode=='train':
+        xforms.extend([RandomHorizontalFlipd(keys), RandomVerticalFlipd(keys)])
     xforms.append(MyNormalized(keys))
     xforms = transforms.Compose(xforms)
     return xforms
@@ -1129,7 +1387,7 @@ def start_run(mode, net, dataloader, amp, epochs, device, loss_fun, loss_fun_mae
               valid_mae_best=None):
     print(mode + "ing ......")
     loss_path = mypath.loss(mode)
-    if mode == 'train':
+    if mode == 'train' or mode == 'validaug':
         net.train()
     else:
         net.eval()
@@ -1445,15 +1703,18 @@ def train(id_: int):
         tr_x, tr_y, vd_x, vd_y, ts_x, ts_y = prepare_data_3D(mypath, data_dir, label_file,
                                                              kfold_seed=49, ts_level_nb=args.ts_level_nb,
                                                              fold=args.fold, total_folds = args.total_folds)
-        tr_dataset = ReconDatasetd(tr_x[:30], transform=recon_transformd())  # do not need tr_y
-        vd_dataset = ReconDatasetd(vd_x[:10], transform=recon_transformd())
-        ts_dataset = ReconDatasetd(ts_x[:10], transform=recon_transformd())
+        tr_dataset = ReconDatasetd(tr_x[:30], transform=recon_transformd('train'))  # do not need tr_y
+        vd_dataset = ReconDatasetd(vd_x[:10], transform=recon_transformd('valid'))
+        ts_dataset = ReconDatasetd(ts_x[:10], transform=recon_transformd('test'))
+        vd_data_aug = ReconDatasetd(vd_x[:10], transform=recon_transformd('train'))
         sampler = None
     else:
         tr_x, tr_y, vd_x, vd_y, ts_x, ts_y = prepare_data(mypath)
-        tr_dataset = SynthesisDataset(tr_x, tr_y, transform=ssc_transformd())
-        vd_dataset = SynthesisDataset(vd_x, vd_y, transform=ssc_transformd())
-        ts_dataset = SynthesisDataset(ts_x, ts_y, transform=ssc_transformd())
+        tr_x, tr_y, vd_x, vd_y, ts_x, ts_y = tr_x[:100], tr_y[:100], vd_x[:100], vd_y[:100], ts_x[:100], ts_y[:100]
+        tr_dataset = SysDataset(tr_x, tr_y, transform=ssc_transformd("train", synthesis=args.sys), synthesis=args.sys)
+        vd_data_aug = SysDataset(vd_x, vd_y, transform=ssc_transformd("train", synthesis=args.sys), synthesis=args.sys)
+        vd_dataset = SysDataset(vd_x, vd_y, transform=ssc_transformd("valid", synthesis=False), synthesis=False)
+        ts_dataset = SysDataset(ts_x, ts_y, transform=ssc_transformd("test", synthesis=False), synthesis=False)  # valid original data
         sampler = sampler_by_disext(tr_y) if args.sampler else None
         print(f'sampler is {sampler}')
 
@@ -1462,13 +1723,14 @@ def train(id_: int):
 
     batch_size = 10
     log_dict['batch_size'] = batch_size
-    workers = 10
-    log_dict['loader_workers'] = workers
-    train_dataloader = DataLoader(tr_dataset, batch_size=batch_size, shuffle=False, num_workers=workers,
+    tr_shuffle = True if sampler is None else False
+    train_dataloader = DataLoader(tr_dataset, batch_size=batch_size, shuffle=tr_shuffle, num_workers=args.workers,
                                   sampler=sampler)
-    valid_dataloader = DataLoader(vd_dataset, batch_size=batch_size, shuffle=False, num_workers=workers)
+    validaug_dataloader = DataLoader(vd_data_aug, batch_size=batch_size, shuffle=False, num_workers=args.workers)
+
+    valid_dataloader = DataLoader(vd_dataset, batch_size=batch_size, shuffle=False, num_workers=args.workers)
     # valid_dataloader = train_dataloader
-    test_dataloader = DataLoader(ts_dataset, batch_size=batch_size, shuffle=False, num_workers=workers)
+    test_dataloader = DataLoader(ts_dataset, batch_size=batch_size, shuffle=False, num_workers=args.workers)
 
 
     if args.eval_id:
@@ -1484,7 +1746,10 @@ def train(id_: int):
             shutil.copy(mypath2.model_fpath, mypath.model_fpath)  # make sure there is at least one model there
             for mo in ['train', 'valid', 'test']:
                 shutil.copy(mypath2.loss(mo), mypath.loss(mo))  # make sure there is at least one model there
-
+            try:
+                shutil.copy(mypath2.loss('validaug'), mypath.loss('validaug'))
+            except:
+                pass
             net.load_state_dict(torch.load(mypath.model_fpath, map_location=torch.device("cpu")))
             valid_mae_best = get_mae_best(mypath2.loss('valid'))
             print(f'load model from {mypath2.model_fpath}, valid_mae_best is {valid_mae_best}')
@@ -1507,33 +1772,37 @@ def train(id_: int):
     for i in range(epochs):  # 20000 epochs
         start_run('train', net, train_dataloader, amp, epochs, device, loss_fun, loss_fun_mae, opt, scaler, mypath, i)
         # run the validation
-        valid_mae_best = start_run('valid', net, valid_dataloader, amp, epochs, device, loss_fun, loss_fun_mae, opt,
-                                   scaler, mypath, i, valid_mae_best)
-        start_run('test', net, test_dataloader, amp, epochs, device, loss_fun, loss_fun_mae, opt, scaler, mypath, i)
+        if (i % args.valid_period == 0) or (i > epochs * 0.8):
+            valid_mae_best = start_run('valid', net, valid_dataloader, amp, epochs, device, loss_fun, loss_fun_mae, opt,
+                                       scaler, mypath, i, valid_mae_best)
+            start_run('validaug', net, validaug_dataloader, amp, epochs, device, loss_fun, loss_fun_mae, opt, scaler, mypath, i)
+            start_run('test', net, test_dataloader, amp, epochs, device, loss_fun, loss_fun_mae, opt, scaler, mypath, i)
 
-    record_best_preds(net, train_dataloader, valid_dataloader, test_dataloader, mypath, device, amp)
-    for mode in ['train', 'valid', 'test']:
-        if args.mode == "infer" and args.eval_id:
-            mypath2 = Path(args.eval_id)
-            for mo in ['train', 'valid', 'test']:
-                shutil.copy(mypath2.data(mo), mypath.data(mo))  # make sure there is at least one model there
-                shutil.copy(mypath2.label(mo), mypath.label(mo))  # make sure there is at least one model there
-                shutil.copy(mypath2.loss(mo), mypath.loss(mo))  # make sure there is at least one model there
-                shutil.copy(mypath2.pred(mo), mypath.pred(mo))  # make sure there is at least one model there
-                shutil.copy(mypath2.pred_int(mo), mypath.pred_int(mo))  # make sure there is at least one model there
-                shutil.copy(mypath2.pred_end5(mo), mypath.pred_end5(mo))  # make sure there is at least one model there
+    data_loaders = {'train': train_dataloader, 'valid': valid_dataloader, 'validaug': validaug_dataloader, 'test': test_dataloader}
+    record_best_preds(net, data_loaders, mypath, device, amp)
+    for mode in ['train', 'valid', 'test', 'validaug']:
+        try:
+            if args.mode == "infer" and args.eval_id:
+                mypath2 = Path(args.eval_id)
+                shutil.copy(mypath2.data(mode), mypath.data(mode))  # make sure there is at least one modedel there
+                shutil.copy(mypath2.label(mode), mypath.label(mode))  # make sure there is at least one modedel there
+                shutil.copy(mypath2.loss(mode), mypath.loss(mode))  # make sure there is at least one modedel there
+                shutil.copy(mypath2.pred(mode), mypath.pred(mode))  # make sure there is at least one modedel there
+                shutil.copy(mypath2.pred_int(mode), mypath.pred_int(mode))  # make sure there is at least one modedel there
+                shutil.copy(mypath2.pred_end5(mode), mypath.pred_end5(mode))  # make sure there is at least one model there
 
-        if args.train_recon == 0:
-            out_dt = confusion.confusion(mypath.label(mode), mypath.pred_end5(mode))
-            log_dict.update(out_dt)
-            icc_ = futil.icc(mypath.label(mode), mypath.pred_end5(mode))
-            log_dict.update(icc_)
-            log_dict.update(icc_)
+            if args.train_recon == 0:
+                out_dt = confusion.confusion(mypath.label(mode), mypath.pred_end5(mode))
+                log_dict.update(out_dt)
+                icc_ = futil.icc(mypath.label(mode), mypath.pred_end5(mode))
+                log_dict.update(icc_)
+                log_dict.update(icc_)
+        except:
+            pass
 
 
-def record_best_preds(net, train_dataloader, valid_dataloader, test_dataloader, mypath, device, amp):
+def record_best_preds(net, dataloader_dict, mypath, device, amp):
     net.load_state_dict(torch.load(mypath.model_fpath, map_location=device))  # load the best weights to do evaluation
-    dataloader_dict = {'train': train_dataloader, 'valid': valid_dataloader, 'test': test_dataloader}
 
     for mode, dataloader in dataloader_dict.items():
         print("Start write pred to disk for ", mode)
@@ -1675,30 +1944,32 @@ def record_experiment(record_file: str, current_id: Optional[int] = None):
             df.at[index, 'elapsed_time'] = elapsed_time
 
             mypath = Path(current_id)  # evaluate old model
-            for mode in ['train', 'valid', 'test']:
-                lock2 = FileLock(mypath.loss(mode) + ".lock")
-                # when evaluating old mode3ls, those files would be copied to new the folder
-                with lock2:
-                    try:
-                        loss_df = pd.read_csv(mypath.loss(mode))
-                    except:
-                        mypath2 = Path(args.eval_id)
-                        for mo in ['train', 'valid', 'test']:
-                            shutil.copy(mypath2.loss(mo), mypath.loss(mo))
-                        loss_df = pd.read_csv(mypath.loss(mode))
+            try:
+                for mode in ['train', 'valid', 'test', 'validaug']:
+                    lock2 = FileLock(mypath.loss(mode) + ".lock")
+                    # when evaluating old mode3ls, those files would be copied to new the folder
+                    with lock2:
+                        try:
+                            loss_df = pd.read_csv(mypath.loss(mode))
+                        except:
+                            mypath2 = Path(args.eval_id)
+                            shutil.copy(mypath2.loss(mode), mypath.loss(mode))
+                            loss_df = pd.read_csv(mypath.loss(mode))
 
-                    if args.train_recon:
-                        best_index = loss_df['mae'].idxmin()
-                        log_dict['metrics_min'] = 'mae'
-                    else:
-                        best_index = loss_df['mae_end5'].idxmin()
-                        log_dict['metrics_min'] = 'mae_end5'
-                    loss = loss_df['loss'][best_index]
-                    mae = loss_df['mae'][best_index]
-                    mae_end5 = loss_df['mae_end5'][best_index]
-                df.at[index, mode + '_loss'] = round(loss, 2)
-                df.at[index, mode + '_mae'] = round(mae, 2)
-                df.at[index, mode + '_mae_end5'] = round(mae_end5, 2)
+                        if args.train_recon:
+                            best_index = loss_df['mae'].idxmin()
+                            log_dict['metrics_min'] = 'mae'
+                        else:
+                            best_index = loss_df['mae_end5'].idxmin()
+                            log_dict['metrics_min'] = 'mae_end5'
+                        loss = loss_df['loss'][best_index]
+                        mae = loss_df['mae'][best_index]
+                        mae_end5 = loss_df['mae_end5'][best_index]
+                    df.at[index, mode + '_loss'] = round(loss, 2)
+                    df.at[index, mode + '_mae'] = round(mae, 2)
+                    df.at[index, mode + '_mae_end5'] = round(mae_end5, 2)
+            except:
+                pass
 
             for key, value in log_dict.items():  # write all log_dict to csv file
                 if type(value) is np.ndarray:

@@ -3,7 +3,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-gpu=1
 #SBATCH -t 7-00:00:00
-#SBATCH --mem-per-gpu=10G
+#SBATCH --mem-per-gpu=90G
 #SBATCH --mail-type=end
 #SBATCH --mail-user=jiajingnan2222@gmail.com
 

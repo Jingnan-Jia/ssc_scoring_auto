@@ -13,7 +13,7 @@ import time
 from typing import (Dict, List, Tuple, Hashable,
                     Optional, Sequence, Union, Mapping)
 
-import SimpleITK as sitk
+import monai
 import numpy as np
 import nvidia_smi
 import pandas as pd
@@ -22,14 +22,17 @@ import torch.nn as nn
 # import streamlit as st
 from filelock import FileLock
 from monai.transforms import ScaleIntensityRange, RandGaussianNoise
+
 from sklearn.model_selection import KFold
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.data import WeightedRandomSampler
 
 import confusion
 import jjnutils.util as futil
-import pingouin as pg
 from set_args_pos import args
+import torchvision.models as models
+import myresnet3d
+
 
 class SmallNet_pos(nn.Module):
     def __init__(self, num_classes: int = 5, base: int = 8):
@@ -62,9 +65,279 @@ class SmallNet_pos(nn.Module):
         return x
 
 
+class Cnn3fc2(nn.Module):
+    def __init__(self, num_classes: int = 5, base: int = 8):
+        super().__init__()
+        self.features = nn.Sequential(
+            nn.Conv3d(1, base, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.MaxPool3d(kernel_size=3, stride=2),
+            nn.Conv3d(base, base * 2, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.MaxPool3d(kernel_size=3, stride=2),
+            nn.Conv3d(base * 2, base * 4, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.MaxPool3d(kernel_size=3, stride=2),
+        )
+        self.avgpool = nn.AdaptiveAvgPool3d((6, 6, 6))
+        self.classifier = nn.Sequential(
+            nn.Dropout(),
+            nn.Linear(base * 4 * 6 * 6 * 6, args.fc1_nodes),
+            nn.ReLU(inplace=True),
+            nn.Dropout(),
+            nn.Linear(args.fc1_nodes, args.fc2_nodes),
+            nn.ReLU(inplace=True),
+            nn.Dropout(),
+            nn.Linear(args.fc2_nodes, num_classes),
+        )
+
+    def forward(self, x):
+        x = self.features(x)
+        x = self.avgpool(x)
+        x = torch.flatten(x, 1)
+        x = self.classifier(x)
+        return x
+
+
+class Cnn4fc2(nn.Module):
+    def __init__(self, num_classes: int = 5, base: int = 8):
+        super().__init__()
+        self.features = nn.Sequential(
+            nn.Conv3d(1, base, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.MaxPool3d(kernel_size=3, stride=2),
+            nn.Conv3d(base, base * 2, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.MaxPool3d(kernel_size=3, stride=2),
+            nn.Conv3d(base * 2, base * 4, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.MaxPool3d(kernel_size=3, stride=2),
+            nn.Conv3d(base * 4, base * 8, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.MaxPool3d(kernel_size=3, stride=2),
+        )
+        self.avgpool = nn.AdaptiveAvgPool3d((6, 6, 6))
+        self.classifier = nn.Sequential(
+            nn.Dropout(),
+            nn.Linear(base * 8 * 6 * 6 * 6, args.fc1_nodes),
+            nn.ReLU(inplace=True),
+            nn.Dropout(),
+            nn.Linear(args.fc1_nodes, args.fc2_nodes),
+            nn.ReLU(inplace=True),
+            nn.Dropout(),
+            nn.Linear(args.fc2_nodes, num_classes),
+        )
+
+    def forward(self, x):
+        x = self.features(x)
+        x = self.avgpool(x)
+        x = torch.flatten(x, 1)
+        x = self.classifier(x)
+        return x
+
+
+class Cnn5fc2(nn.Module):
+    def __init__(self, num_classes: int = 5, base: int = 8):
+        super().__init__()
+        self.features = nn.Sequential(
+            nn.Conv3d(1, base, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.BatchNorm3d(base),
+            nn.MaxPool3d(kernel_size=3, stride=2),
+            
+            nn.Conv3d(base, base * 2, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.BatchNorm3d(base * 2),
+            nn.MaxPool3d(kernel_size=3, stride=2),
+            
+            nn.Conv3d(base * 2, base * 4, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.BatchNorm3d(base * 4),
+            nn.MaxPool3d(kernel_size=3, stride=2),
+            
+            nn.Conv3d(base * 4, base * 8, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.BatchNorm3d(base * 8),
+            nn.MaxPool3d(kernel_size=3, stride=2),
+
+            nn.Conv3d(base * 8, base * 16, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.BatchNorm3d(base * 16),
+            nn.MaxPool3d(kernel_size=3, stride=2),
+        )
+        self.avgpool = nn.AdaptiveAvgPool3d((6, 6, 6))
+        self.classifier = nn.Sequential(
+            nn.Dropout(),
+            nn.Linear(base * 16 * 6 * 6 * 6, args.fc1_nodes),
+            nn.ReLU(inplace=True),
+            nn.Dropout(),
+            nn.Linear(args.fc1_nodes, args.fc2_nodes),
+            nn.ReLU(inplace=True),
+            nn.Dropout(),
+            nn.Linear(args.fc2_nodes, num_classes),
+        )
+
+    def forward(self, x):
+        x = self.features(x)
+        x = self.avgpool(x)
+        x = torch.flatten(x, 1)
+        x = self.classifier(x)
+        return x
+
+
+class Cnn6fc2(nn.Module):
+    def __init__(self, num_classes: int = 5, base: int = 8):
+        super().__init__()
+        self.features = nn.Sequential(
+            nn.Conv3d(1, base, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.BatchNorm3d(base),
+            nn.MaxPool3d(kernel_size=3, stride=2),
+
+            nn.Conv3d(base, base * 2, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.BatchNorm3d(base * 2),
+            nn.MaxPool3d(kernel_size=3, stride=2),
+
+            nn.Conv3d(base * 2, base * 4, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.BatchNorm3d(base * 4),
+            nn.MaxPool3d(kernel_size=3, stride=2),
+
+            nn.Conv3d(base * 4, base * 8, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.BatchNorm3d(base * 8),
+            nn.MaxPool3d(kernel_size=3, stride=2),
+
+            nn.Conv3d(base * 8, base * 16, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.BatchNorm3d(base * 16),
+            nn.MaxPool3d(kernel_size=3, stride=2),
+
+            nn.Conv3d(base * 16, base * 32, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.BatchNorm3d(base * 32),
+            nn.MaxPool3d(kernel_size=3, stride=2),
+        )
+        self.avgpool = nn.AdaptiveAvgPool3d((6, 6, 6))
+        self.classifier = nn.Sequential(
+            nn.Dropout(),
+            nn.Linear(base * 32 * 6 * 6 * 6, args.fc1_nodes),
+            nn.ReLU(inplace=True),
+            nn.Dropout(),
+            nn.Linear(args.fc1_nodes, args.fc2_nodes),
+            nn.ReLU(inplace=True),
+            nn.Dropout(),
+            nn.Linear(args.fc2_nodes, num_classes),
+        )
+
+    def forward(self, x):
+        x = self.features(x)
+        x = self.avgpool(x)
+        x = torch.flatten(x, 1)
+        x = self.classifier(x)
+        return x
+
+
+class Vgg11_3d(nn.Module):
+    def __init__(self, num_classes: int = 5, base: int = 8):
+        super().__init__()
+        self.features = nn.Sequential(
+            nn.Conv3d(1, base, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.BatchNorm3d(base),
+            nn.MaxPool3d(kernel_size=3, stride=2),
+
+            nn.Conv3d(base, base * 2, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.BatchNorm3d(base * 2),
+            nn.MaxPool3d(kernel_size=3, stride=2),
+
+            nn.Conv3d(base * 2, base * 4, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.BatchNorm3d(base * 4),
+            nn.Conv3d(base * 4, base * 4, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.BatchNorm3d(base * 4),
+            nn.MaxPool3d(kernel_size=3, stride=2),
+
+            nn.Conv3d(base * 4, base * 8, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.BatchNorm3d(base * 8),
+            nn.Conv3d(base * 8, base * 8, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.BatchNorm3d(base * 8),
+            nn.MaxPool3d(kernel_size=3, stride=2),
+
+            nn.Conv3d(base * 8, base * 16, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.BatchNorm3d(base * 16),
+            nn.Conv3d(base * 16, base * 16, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.BatchNorm3d(base * 16),
+            nn.MaxPool3d(kernel_size=3, stride=2),
+
+        )
+        self.avgpool = nn.AdaptiveAvgPool3d((6, 6, 6))
+        self.classifier = nn.Sequential(
+            nn.Dropout(),
+            nn.Linear(base * 16 * 6 * 6 * 6, args.fc1_nodes),
+            nn.ReLU(inplace=True),
+            nn.Dropout(),
+            nn.Linear(args.fc1_nodes, args.fc2_nodes),
+            nn.ReLU(inplace=True),
+            nn.Dropout(),
+            nn.Linear(args.fc2_nodes, num_classes),
+        )
+
+    def forward(self, x):
+        x = self.features(x)
+        x = self.avgpool(x)
+        x = torch.flatten(x, 1)
+        x = self.classifier(x)
+        return x
+
+
 def get_net_pos(name: str, nb_cls: int):
     if name == 'cnn3fc1':
         net = SmallNet_pos(num_classes=5)
+    elif name == 'cnn3fc2':
+        net = Cnn3fc2(num_classes=5)
+    elif name == 'cnn4fc2':
+        net = Cnn4fc2(num_classes=5)
+    elif name == 'cnn5fc2':
+        net = Cnn5fc2(num_classes=5)
+    elif name == 'cnn6fc2':
+        net = Cnn6fc2(num_classes=5)
+    elif name == "vgg11_3d":
+        net = Vgg11_3d(num_classes=5)
+    elif name=="r3d_resnet":
+        if args.pretrained:  # inplane=64
+            net = models.video.r3d_18(pretrained=True, progress=True)
+            net.stem[0] = nn.Conv3d(1, 64, kernel_size=(3, 7, 7), stride=(1, 2, 2),
+                                    padding=(1, 3, 3), bias=False)
+            net.fc = torch.nn.Linear(in_features=512, out_features=5)
+        else:  # inplane = 8
+            net = myresnet3d.r3d_18(pretrained=False, num_classes=5)
+            net.stem[0] = nn.Conv3d(1, 8, kernel_size=(3, 7, 7), stride=(1, 2, 2),
+                                    padding=(1, 3, 3), bias=False)
+
+
+
+
+    elif 'vgg' in name:
+        if name == 'vgg11_bn':
+            net = models.vgg11_bn(pretrained=args.pretrained, progress=True)
+        elif name == 'vgg16':
+            net = models.vgg16(pretrained=args.pretrained, progress=True)
+        elif name == 'vgg19':
+            net = models.vgg19(pretrained=args.pretrained, progress=True)
+        else:
+            raise Exception("Wrong vgg net name specified ", name)
+        net.features[0] = nn.Conv2d(1, 64, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))  # change in_features to 1
+        net.classifier[0] = torch.nn.Linear(in_features=512 * 7 * 7, out_features=args.fc1_nodes)
+        net.classifier[3] = torch.nn.Linear(in_features=args.fc1_nodes, out_features=args.fc2_nodes)
+        net.classifier[6] = torch.nn.Linear(in_features=args.fc2_nodes, out_features=3)
     else:
         raise Exception('wrong net name', name)
     net_parameters = futil.count_parameters(net)
@@ -119,8 +392,27 @@ class SScScoreDataset(Dataset):
             labels = [int((level_pos - ori[0]) / sp[0]) for level_pos in world]  # ori[0] is the ori of z axil
             self.y.append(np.array(labels))
 
+        if args.fine_level:
+            x_ls = []
+            y_ls = []
+            for x, y in zip(self.data_x_np, self.y):
+                start = y[0] - args.fine_window
+                end = y[0] + args.fine_window
+                x = x[start: end]
+                x_ls.append(x)
+
+                y = y[0] - start
+                y_ls.append(y)
+
+            self.data_x_np = x_ls
+            self.y = y_ls
+
         self.data_x_np = [x.astype(np.float32) for x in self.data_x_np]
         self.data_y_np = [y.astype(np.float32) for y in self.y]
+
+
+
+
         # randomcrop = RandomCropPos()
         # image_, label_ = [], []
         # for image, label in zip(self.data_x_np, self.data_y_np):
@@ -303,6 +595,32 @@ class RandomCropPosd:
         d = shiftd(d, start, self.z_size, self.y_size, self.x_size)
         return d
 
+# class CropLevelRegiond:
+#     def __init__(self, level):
+#         self.level = level
+
+class CropLevelRegiond:
+    def __init__(self, level):
+        self.level = level
+        self.height_mm = 64
+        self.height = args.fine_window  # 95% CI
+
+    def __call__(self, data: Mapping[Hashable, np.ndarray]) -> Dict[Hashable, np.ndarray]:
+        d = dict(data)
+        label = d['label_key']  # z slice number
+        lower = label - self.height
+        start = random.randint(lower, label)
+        end = start + self.height
+        if end > d['image_key'].shape[0]:
+            end = d['image_key'].shape[0]
+        d['image_key'] = d['image_key'][start: end].astype(np.float32)
+        d['label_key'] = d['label_key'] - start
+        d['label_key'] = np.array(d['label_key']).reshape(-1, ).astype(np.float32)
+        d['world_key'] = d['world_key'][0]
+        d['world_key'] = np.array(d['world_key']).reshape(-1, ).astype(np.float32)
+
+        return d
+
 
 class ComposePosd:
     """My Commpose to handlllllllle with img and label at the same time.
@@ -326,17 +644,20 @@ class ComposePosd:
         return format_string
 
 
-def get_transformd(mode=None):
+def get_transformd(mode=None, level=None):
     """
     The input image data is from 0 to 1.
     :param mode:
     :return:
     """
     xforms = []
-    if mode == 'train':
-        xforms.extend([RandomCropPosd(), RandGaussianNoisePosd()])
+    if level:
+        xforms.append(CropLevelRegiond(level))
     else:
-        xforms.extend([CenterCropPosd()])
+        if mode == 'train':
+            xforms.extend([RandomCropPosd(), RandGaussianNoisePosd()])
+        else:
+            xforms.extend([CenterCropPosd()])
 
     xforms.extend([MyNormalizeImagePosd(), AddChannelPosd()])
     transform = ComposePosd(xforms)
@@ -392,15 +713,19 @@ def split_dir_pats(data_dir, label_file, ts_id):
     abs_dir_path = os.path.dirname(os.path.realpath(__file__))  # abosolute path of the current .py file
     data_dir = abs_dir_path + "/" + data_dir
 
-    dir_pats = sorted(glob.glob(os.path.join(data_dir, "Pat_*CTimage*.mha")))
-    if len(dir_pats)==0:
-        dir_pats = sorted(glob.glob(os.path.join(data_dir, "Pat_*", "CTimage*.mha")))
+    dir_pats = sorted(glob.glob(os.path.join(data_dir, "Pat_*CTimage.mha")))
+    if len(dir_pats)==0:  # does not find patients in this directory
+        dir_pats = sorted(glob.glob(os.path.join(data_dir, "Pat_*CTimage_low.mha")))
+        if len(dir_pats) == 0:
+            dir_pats = sorted(glob.glob(os.path.join(data_dir, "Pat_*", "CTimage.mha")))
 
     label_excel = pd.read_excel(label_file, engine='openpyxl')
 
     # 3 labels for one level
     pats_id_in_excel = pd.DataFrame(label_excel, columns=['PatID']).values
     pats_id_in_excel = [i[0] for i in pats_id_in_excel]
+    print(f"len(dir): {len(dir_pats)}, len(pats_in_excel): {len(pats_id_in_excel)} ")
+    print("======================")
     assert len(dir_pats) == len(pats_id_in_excel)
 
     # assert the names of patients got from 2 ways
@@ -445,7 +770,7 @@ def start_run(mode, net, dataloader, epochs, loss_fun, loss_fun_mae, opt, scaler
               valid_mae_best=None):
     print(mode + "ing ......")
     loss_path = mypath.loss(mode)
-    if mode == 'train':
+    if mode == 'train' or mode == 'validaug':
         net.train()
     else:
         net.eval()
@@ -658,14 +983,16 @@ def train(id: int):
 
     net = get_net_pos(args.net, 5)
 
-    if args.resample_z == 256:
+    if args.fine_level:
+        data_dir: str = "dataset/SSc_DeepLearning"
+    elif args.resample_z == 256:
         data_dir: str = "dataset/LowResolution_fix_size"
     elif args.resample_z == 512:
         data_dir: str = "dataset/LowRes512_192_192"
     elif args.resample_z == 800:
         data_dir: str = "dataset/LowRes800_160_160"
     elif args.resample_z == 1024:
-        data_dir: str = "dataset/LowRes1024_128_128"
+        data_dir: str = "dataset/LowRes1024_256_256"
     else:
         raise Exception("wrong resample_z:" + str(args.resample_z))
 
@@ -681,14 +1008,19 @@ def train(id: int):
     log_dict['vd_pat_nb'] = len(vd_x)
     log_dict['ts_pat_nb'] = len(ts_x)
 
-    tr_dataset = SScScoreDataset(data_x_names=tr_x, world_list=tr_y, transform=get_transformd('train'))
-    vd_dataset = SScScoreDataset(data_x_names=vd_x, world_list=vd_y, transform=get_transformd('train')) # have comparible learning curve
-    ts_dataset = SScScoreDataset(data_x_names=ts_x, world_list=ts_y, transform=get_transformd('train'))
-
+    tr_dataset = SScScoreDataset(data_x_names=tr_x, world_list=tr_y, transform=get_transformd('train',
+                                                                                              level=args.fine_level))
+    vdaug_dataset = SScScoreDataset(data_x_names=vd_x, world_list=vd_y, transform=get_transformd('train',
+                                                                                                 level=args.fine_level)) # have comparible learning curve
+    vd_dataset = SScScoreDataset(data_x_names=vd_x, world_list=vd_y, transform=get_transformd('valid',
+                                                                                              level=args.fine_level))
+    ts_dataset = SScScoreDataset(data_x_names=ts_x, world_list=ts_y, transform=get_transformd('test',
+                                                                                              level=args.fine_level))
     workers = 5
     log_dict['loader_workers'] = workers
     train_dataloader = DataLoader(tr_dataset, batch_size=args.batch_size, shuffle=True, num_workers=workers)
     valid_dataloader = DataLoader(vd_dataset, batch_size=args.batch_size, shuffle=False, num_workers=workers)
+    validaug_dataloader = DataLoader(vdaug_dataset, batch_size=args.batch_size, shuffle=False, num_workers=workers)
     # valid_dataloader = train_dataloader
     test_dataloader = DataLoader(ts_dataset, batch_size=args.batch_size, shuffle=False, num_workers=workers)
 
@@ -698,6 +1030,10 @@ def train(id: int):
         shutil.copy(mypath2.model_fpath, mypath.model_fpath)  # make sure there is at least one model there
         for mo in ['train', 'valid', 'test']:
             shutil.copy(mypath2.loss(mo), mypath.loss(mo))  # make sure there is at least one model there
+        try:
+            shutil.copy(mypath2.loss('validaug'), mypath.loss('validaug'))
+        except:
+            pass
 
         net.load_state_dict(torch.load(mypath.model_fpath, map_location=device))
         valid_mae_best = get_mae_best(mypath2.loss('valid'))
@@ -712,7 +1048,7 @@ def train(id: int):
     opt = torch.optim.Adam(net.parameters(), lr=lr, weight_decay=args.weight_decay)
 
     scaler = torch.cuda.amp.GradScaler() if amp else None
-    epochs = 1 if args.mode == 'infer' else args.epochs
+    epochs = 0 if args.mode == 'infer' else args.epochs
     for i in range(epochs):  # 20000 epochs
         if args.mode in ['train', 'continue_train']:
             start_run('train', net, train_dataloader, epochs, loss_fun, loss_fun_mae, opt, scaler, mypath,
@@ -720,26 +1056,32 @@ def train(id: int):
         # run the validation
         valid_mae_best = start_run('valid', net, valid_dataloader, epochs, loss_fun, loss_fun_mae, opt,
                                    scaler, mypath, i, valid_mae_best)
+        start_run('validaug', net, validaug_dataloader, epochs, loss_fun, loss_fun_mae, opt, scaler, mypath, i)
         start_run('test', net, test_dataloader, epochs, loss_fun, loss_fun_mae, opt, scaler, mypath, i)
 
-    record_best_preds(net, train_dataloader, valid_dataloader, test_dataloader, mypath)
-    for mode in ['train', 'valid', 'test']:
-        if args.eval_id:
-            mypath2 = Path(args.eval_id)
-            for mo in ['train', 'valid', 'test']:
-                shutil.copy(mypath2.data(mo), mypath.data(mo))  # make sure there is at least one model there
-                shutil.copy(mypath2.loss(mo), mypath.loss(mo))  # make sure there is at least one model there
-                shutil.copy(mypath2.world(mo), mypath.world(mo))  # make sure there is at least one model there
-                shutil.copy(mypath2.pred(mo), mypath.pred(mo))  # make sure there is at least one model there
-                shutil.copy(mypath2.pred_int(mo), mypath.pred_int(mo))  # make sure there is at least one model there
-                shutil.copy(mypath2.pred_world(mo),
-                            mypath.pred_world(mo))  # make sure there is at least one model there
+    dataloader_dict = {'train': train_dataloader, 'valid': valid_dataloader,
+                       'test': test_dataloader, 'validaug':validaug_dataloader}
+    record_best_preds(net, dataloader_dict, mypath)
 
-        out_dt = confusion.confusion(mypath.world(mode), mypath.pred_world(mode), label_nb=args.z_size, space=1)
-        log_dict.update(out_dt)
+    for mode in ['train', 'valid', 'test', 'validaug']:
+        try:
+            if args.eval_id:
+                mypath2 = Path(args.eval_id)
+                shutil.copy(mypath2.data(mode), mypath.data(mode))  # make sure there is at least one modedel there
+                shutil.copy(mypath2.loss(mode), mypath.loss(mode))  # make sure there is at least one modedel there
+                shutil.copy(mypath2.world(mode), mypath.world(mode))  # make sure there is at least one modedel there
+                shutil.copy(mypath2.pred(mode), mypath.pred(mode))  # make sure there is at least one modedel there
+                shutil.copy(mypath2.pred_int(mode), mypath.pred_int(mode))  # make sure there is at least one modedel there
+                shutil.copy(mypath2.pred_world(mode),
+                            mypath.pred_world(mode))  # make sure there is at least one modedel there
 
-        icc_ = futil.icc(mypath.world(mode), mypath.pred_world(mode))
-        log_dict.update(icc_)
+            out_dt = confusion.confusion(mypath.world(mode), mypath.pred_world(mode), label_nb=args.z_size, space=1)
+            log_dict.update(out_dt)
+
+            icc_ = futil.icc(mypath.world(mode), mypath.pred_world(mode))
+            log_dict.update(icc_)
+        except:
+            pass
 
 
 def SlidingLoader(fpath, label, z_size, stride=1, batch_size=1):
@@ -799,6 +1141,8 @@ class Evaluater():
                 sliding_loader = SlidingLoader(batch_data['fpath_key'][idx], batch_data['label_key'][idx],
                                                stride=args.infer_stride, z_size=args.z_size, batch_size=args.batch_size)
                 pred_ls = []
+                pred_in_patch_ls = []
+                label_in_patch_ls = []
                 for patch, new_label, start in sliding_loader:
                     batch_x = patch.to(device)
 
@@ -815,10 +1159,16 @@ class Evaluater():
                             pred = self.net(batch_x)
 
                     pred = pred.cpu().detach().numpy()
-                    pred += start.numpy().reshape((-1, 1))  # re organize it to original coordinate
+                    pred_in_patch = pred
+                    pred_in_patch_ls.append(pred_in_patch)
+                    pred = pred_in_patch + start.numpy().reshape((-1, 1))  # re organize it to original coordinate
                     pred_ls.append(pred)
 
+                    label_in_patch_ls.append(new_label)
+
                 pred_all = np.concatenate(pred_ls, axis=0)
+                pred_in_patch_all = np.concatenate(pred_in_patch_ls, axis=0)
+                label_in_patch_all = np.concatenate(label_in_patch_ls, axis=0)
 
                 batch_label: np.ndarray = batch_data['label_key'][idx].cpu().detach().numpy().astype('Int64')
                 batch_preds_ave: np.ndarray = np.mean(pred_all, 0)
@@ -830,6 +1180,17 @@ class Evaluater():
 
                 batch_world: np.ndarray = batch_data['world_key'][idx].cpu().detach().numpy()
                 head = ['L1', 'L2', 'L3', 'L4', 'L5']
+                if idx < 5:
+                    futil.appendrows_to(self.mypath.pred(self.mode).split('.csv')[0] + '_' + str(idx) + '.csv', pred_all, head=head)
+                    futil.appendrows_to(self.mypath.pred(self.mode).split('.csv')[0] + '_' + str(idx) + '_in_patch.csv', pred_in_patch_all, head=head)
+                    futil.appendrows_to(self.mypath.label(self.mode).split('.csv')[0] + '_' + str(idx) + '_in_patch.csv', label_in_patch_all, head=head)
+
+
+                    pred_all_world = pred_all * batch_data['space_key'][idx][0].item() + \
+                                                batch_data['origin_key'][idx][0].item()
+                    futil.appendrows_to(self.mypath.pred(self.mode).split('.csv')[0] + '_' + str(idx) + '_world.csv', pred_all_world, head=head)
+
+
                 futil.appendrows_to(self.mypath.label(self.mode), batch_label, head=head)
                 futil.appendrows_to(self.mypath.pred(self.mode), batch_preds_ave, head=head)
                 futil.appendrows_to(self.mypath.pred_int(self.mode), batch_preds_int, head=head)
@@ -837,9 +1198,8 @@ class Evaluater():
                 futil.appendrows_to(self.mypath.world(self.mode), batch_world, head=head)
 
 
-def record_best_preds(net, train_dataloader, valid_dataloader, test_dataloader, mypath):
+def record_best_preds(net, dataloader_dict, mypath):
     net.load_state_dict(torch.load(mypath.model_fpath, map_location=device))  # load the best weights to do evaluation
-    dataloader_dict = {'train': train_dataloader, 'valid': valid_dataloader, 'test': test_dataloader}
     net.eval()
     for mode, dataloader in dataloader_dict.items():
         evaluater = Evaluater(net, dataloader, mode, mypath)
@@ -950,7 +1310,13 @@ def record_experiment(record_file: str, current_id: Optional[int] = None):
                 lock2 = FileLock(mypath.loss(mode) + ".lock")
                 # when evaluating old mode3ls, those files would be copied to new the folder
                 with lock2:
-                    loss_df = pd.read_csv(mypath.loss(mode))
+                    try:
+                        loss_df = pd.read_csv(mypath.loss(mode))
+                    except:
+                        mypath2 = Path(args.eval_id)
+                        shutil.copy(mypath2.loss(mode), mypath.loss(mode))
+                        loss_df = pd.read_csv(mypath.loss(mode))
+
                     best_index = loss_df['mae'].idxmin()
                     log_dict['metrics_min'] = 'mae'
                     loss = loss_df['loss'][best_index]

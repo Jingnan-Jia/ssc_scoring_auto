@@ -10,19 +10,6 @@ from skimage.measure import label
 import matplotlib.pyplot as plt
 
 
-def find_repeated_label(nb_saved, out, bw_img):
-    img = copy.deepcopy(bw_img)
-    img[out == 0] = 0
-    uniq = np.unique(img)
-
-    if len(uniq) < nb_saved + 1:  # 1 background and 5 lobes
-        return 1
-    elif len(uniq) == nb_saved + 1:
-        return 0
-    else:
-        raise Exception("labels are wrong!")
-
-
 def largest_connected_parts(bw_img, nb_need_saved=2):
     bw_img[:10] = 0  # exclude the noise at the edges
     bw_img[-10:] = 0
@@ -79,3 +66,4 @@ for scan in scan_files:
 
     save_itk(scan.split('.mha')[0] + '_lung.mha', ct_ero2, ori, sp)
     print('save lung to ', scan.split('.mha')[0] + '_lung.mha')
+

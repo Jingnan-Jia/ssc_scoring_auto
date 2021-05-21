@@ -29,10 +29,10 @@ for pos, ct_f, lu_f in zip(pos.iterrows(), ct_fpath, lu_fpath):
     lu_f: str
     po: pd.Series
 
-    ct, ori, sp = load_itk(ct_f, require_ori_sp=True)
-    lu, _, __ = load_itk(lu_f, require_ori_sp=True)
-    edge_value = ct[0, 0, 0]
-    ct[lu==0] = edge_value
+    # ct, ori, sp = load_itk(ct_f, require_ori_sp=True)
+    lu, ori, sp = load_itk(lu_f, require_ori_sp=True)
+    # edge_value = ct[0, 0, 0]
+    # ct[lu==0] = edge_value
 
     # select specific slices
     # slice_index_middle = []
@@ -42,8 +42,9 @@ for pos, ct_f, lu_f in zip(pos.iterrows(), ct_fpath, lu_fpath):
     slice_index_up = [i - 1 for i in slice_index_middle]
     slice_index_down = [i + 1 for i in slice_index_middle]
     for up, middle, down, lv in zip(slice_index_up, slice_index_middle, slice_index_down, [1,2,3,4,5]):
-        save_itk(os.path.dirname(lu_f) + "/" + "Level" + str(lv) + "_up_MaskedByLung.mha", ct[up], ori, sp)
-        save_itk(os.path.dirname(lu_f) + "/" + "Level" + str(lv) + "_middle_MaskedByLung.mha", ct[middle], ori, sp)
-        save_itk(os.path.dirname(lu_f) + "/" + "Level" + str(lv) + "_down_MaskedByLung.mha", ct[down], ori, sp)
+        save_itk(os.path.dirname(lu_f) + "/" + "Level" + str(lv) + "_up_lung_mask.mha", lu[up], ori, sp)
+        save_itk(os.path.dirname(lu_f) + "/" + "Level" + str(lv) + "_middle_lung_mask.mha", lu[middle], ori, sp)
+        save_itk(os.path.dirname(lu_f) + "/" + "Level" + str(lv) + "_down_lung_mask.mha", lu[down], ori, sp)
+
     print(lu_f)
 
