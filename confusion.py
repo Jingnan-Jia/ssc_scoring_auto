@@ -74,30 +74,29 @@ def confusion(label_file, pred_file, label_nb=100, space=5):
 
     if df_label.columns[0] not in ['L1_pos', 'L1', 'disext']:
         df_label = pd.read_csv(label_file, header=None)
-        if len(df_label.columns)==5:
+        if len(df_label.columns) == 5:
             columns = ['L1', 'L2', 'L3', 'L4', 'L5']
-        elif len(df_label.columns)==3:
+        elif len(df_label.columns) == 3:
             columns = ['disext', 'gg', 'retp']
         else:
             columns = ['unknown']
-        df_label.columns= columns
+        df_label.columns = columns
 
     if df_pred.columns[0] not in ['L1_pos', 'L1', 'disext']:
         df_pred = pd.read_csv(pred_file, header=None)
-        if len(df_pred.columns)==5:
+        if len(df_pred.columns) == 5:
             columns = ['L1', 'L2', 'L3', 'L4', 'L5']
-        elif len(df_pred.columns)==3:
+        elif len(df_pred.columns) == 3:
             columns = ['disext', 'gg', 'retp']
         else:
             columns = ['unknown']
         df_pred.columns = columns
 
-
     # df_label = df_label.head(18) # pred_1 = "/data/jjia/ssc_scoring/LK_time2_18patients.csv"
     # df_pred = df_pred.head(18) #label_1 = "/data/jjia/ssc_scoring/ground_truth_18_patients.csv"
     print('len_df_label', len(df_label))
     out_dt = {}
-    fig = plt.figure(figsize=(20,6))
+    fig = plt.figure(figsize=(20, 6))
     lower_ls, upper_ls = [], []
     if len(df_label.columns) == 3:
         row_nb, col_nb = 1, 3
@@ -118,7 +117,7 @@ def confusion(label_file, pred_file, label_nb=100, space=5):
         pred = df_pred[column].to_numpy().reshape(-1, 1)
 
         # bland-altman plot
-        ax = fig.add_subplot(row_nb, col_nb, plot_id+1)
+        ax = fig.add_subplot(row_nb, col_nb, plot_id + 1)
         # f, ax = plt.subplots(1, figsize=(8, 5))
         f = sm.graphics.mean_diff_plot(pred, label, ax=ax)
         ax.set_title(column, fontsize=16)
@@ -129,10 +128,10 @@ def confusion(label_file, pred_file, label_nb=100, space=5):
         # kappa2 = cohen_kappa_score(label.astype(int), pred.astype(int))
         # print(f"unweighted kappa for {column} is {kappa2}")
 
-
         # f.savefig(basename + '/' + prefix + "_" + column + '_bland_altman.png')
         # plt.close(f)
-        kappa = cohen_kappa_score(label.astype(int), pred.astype(int), weights='linear', labels=np.array(list(range(100))) )
+        kappa = cohen_kappa_score(label.astype(int), pred.astype(int), weights='linear',
+                                  labels=np.array(list(range(101))))
         diff = pred.astype(int) - label.astype(int)
         ave_mae = np.mean(np.abs(diff))
         mean = np.mean(diff)
@@ -144,10 +143,7 @@ def confusion(label_file, pred_file, label_nb=100, space=5):
         print(f"std for {column} is {std}")
         print(f"icc for {column} is {icc_all_ls[plot_id]}")
 
-
-
         if len(df_label.columns) == 3:
-
 
             pred[pred < 0] = 0
             pred[pred > label_nb] = label_nb
@@ -181,11 +177,7 @@ def confusion(label_file, pred_file, label_nb=100, space=5):
             df.loc[0, 'std'] = std
             df.loc[0, 'icc'] = icc_all_ls[plot_id]
 
-
-
-
-
-            if 'valid' in pred_file:
+            if ('valid' in os.path.basename(pred_file)) and ('validaug' not in os.path.basename(pred_file)):
                 out_dt['valid_ave_Acc_' + column] = np.nanmean(acc_np)  # there may be some np.nan
                 out_dt['valid_ave_MAE_' + column] = np.nanmean(mae_np)
                 out_dt['valid_WKappa_' + column] = kappa
@@ -193,8 +185,6 @@ def confusion(label_file, pred_file, label_nb=100, space=5):
                 out_dt['valid_mean' + column] = mean
                 out_dt['valid_std' + column] = std
                 out_dt['valid_icc' + column] = icc_all_ls[plot_id]
-
-
 
             df.replace(0, np.nan, inplace=True)
             for idx, row in df.iterrows():
@@ -256,7 +246,7 @@ def confusion(label_file, pred_file, label_nb=100, space=5):
     f.savefig(basename + '/' + prefix + '_bland_altman.png')
     plt.close(f)
 
-    if ('valid' in pred_file) and (len(df_label.columns) ==3):
+    if ('valid' in pred_file) and (len(df_label.columns) == 3):
         out_dt['valid_ave_Acc_all'] = 0
         out_dt['valid_ave_MAE_all'] = 0
         out_dt['valid_WKappa_all'] = 0

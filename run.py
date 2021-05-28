@@ -14,6 +14,7 @@ import threading
 import time
 from collections import OrderedDict
 from typing import (List, Tuple, Optional, Union, Dict, Sequence)
+from multiprocessing import Process, Manager, Lock
 
 import jjnutils.util as futil
 import numpy as np
@@ -38,9 +39,16 @@ import cv2
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+from statistics import mean
+import threading
 
 LogType = Optional[Union[int, float, str]]  # int includes bool
 log_dict: Dict[str, LogType] = {}  # a global dict to store variables saved to log files
+manager = Manager()
+train_label_numbers = manager.dict({label: key for label, key in zip(np.arange(0, 21) * 5, np.zeros((21,)))})
+train_lock = Lock()
+validaug_label_numbers = manager.dict({label: key for label, key in zip(np.arange(0, 21) * 5, np.zeros((21,)))})
+validaug_lock = Lock()
 
 
 def summary(model: nn.Module, input_size: Tuple[int, ...], batch_size=-1, device="cpu"):
@@ -845,9 +853,10 @@ class MyNormalized(MapTransform):
 
 
 class SysthesisNewSampled(MapTransform):
-    def __init__(self, keys, retp_fpath):
+    def __init__(self, keys, retp_fpath, sys_pro, mode):
         super().__init__(keys)
-
+        self.sys_pro = sys_pro
+        self.mode = mode
         self.retp_fpath = retp_fpath# retp will generated from its egg
         self.retp_ori_image_fpath = retp_fpath.split('.mha')[0] + '_ori.mha'
         retp_egg = futil.load_itk(self.retp_fpath)
@@ -871,6 +880,13 @@ class SysthesisNewSampled(MapTransform):
         self.retp_candidate = self.rand_affine_crop(self.retp_temp)
         self.counter = 0
         self.systh_y = []
+        if self.mode == "train":
+            self.label_numbers = train_label_numbers
+        elif self.mode == 'validaug':
+            self.label_numbers = validaug_label_numbers
+        else:
+            raise Exception("mode is wrong for synthetic data", self.mode)
+
 
     def rand_affine_crop(self, retp_temp: np.ndarray):
         retp_temp_tensor = torch.from_numpy(retp_temp[None])
@@ -879,15 +895,48 @@ class SysthesisNewSampled(MapTransform):
         retp_candidate = torch.squeeze(retp_candidate).numpy()
         return retp_candidate
 
+    def balanced(self, label):
+        category = label // 5 * 5
+        average = mean(list(self.label_numbers.values()))
+
+        if self.label_numbers[category] > average * 1.1:
+            return False
+        else:
+            return True
+
+    def account_label(self, label):
+        category = label // 5 * 5
+        # with self.lock:
+        if self.mode == "train":
+            with train_lock:
+            # train_lock.acquire()
+            # with train_lock:
+                train_label_numbers[category] = train_label_numbers[category] + 1
+                print(sum(train_label_numbers.values()))
+            # train_lock.release()
+        else:
+            validaug_lock.acquire()
+            validaug_label_numbers[category] += 1
+            print(sum(validaug_label_numbers.values()))
+
+            # print(validaug_label_numbers)
+            validaug_lock.release()
+
     def __call__(self, data):
         d = dict(data)
+
         if d['label_key'][0].item() == 0:
             tmp = random.random()
-            if tmp > 0.5:
+            if tmp > self.sys_pro:
                 for key in self.keys:
                     d[key], d['label_key'] = self.systhesis(d[key], d['lung_mask_key'])
                     print("after systhesis, label is ",  d['label_key'])
-                    self.systh_y.append(d['label_key'])
+            else:
+                print("No need for systhesis, label is ", d['label_key'])
+        else:
+            print("No need for systhesis, label is ", d['label_key'])
+
+        self.account_label(d['label_key'][0].item())
         return d
 
     def random_mask(self, nb_ellipse):
@@ -914,161 +963,168 @@ class SysthesisNewSampled(MapTransform):
         return fig_
 
 
-    def systhesis(self, img: torch.Tensor, img_mask: np.ndarray):
+    def systhesis(self, img: torch.Tensor, lung_mask: Union[np.ndarray, torch.Tensor]):
         img = img.numpy()
-        if type(img_mask) == torch.Tensor:
-            img_mask = img_mask.numpy()
+        if type(lung_mask) == torch.Tensor:
+            lung_mask = lung_mask.numpy()
 
         self.counter += 1
         if self.counter == 100:  # update self.retp_candidate
             self.counter = 0
             self.retp_candidate = self.rand_affine_crop(self.retp_temp)
 
-        fig, ax = plt.subplots()
-        ax.imshow(img, cmap='gray')
-        ax.axis('off')
-        fig.savefig('/data/jjia/ssc_scoring/image_samples/img_' + str(self.counter) + '.png')
+        # fig, ax = plt.subplots()
+        # ax.imshow(img, cmap='gray')
+        # ax.axis('off')
+        # fig.savefig('/data/jjia/ssc_scoring/image_samples/img_' + str(self.counter) + '.png')
+        #
+        # fig, ax = plt.subplots()
+        # ax.imshow(self.retp_candidate, cmap='gray')
+        # ax.axis('off')
+        # fig.savefig('/data/jjia/ssc_scoring/image_samples/retp_candidate_' + str(self.counter) + '.png')
 
-        fig, ax = plt.subplots()
-        ax.imshow(self.retp_candidate, cmap='gray')
-        ax.axis('off')
-        fig.savefig('/data/jjia/ssc_scoring/image_samples/retp_candidate_' + str(self.counter) + '.png')
+        while(1):
+            rand_gg_mask = self.random_mask(3)
+            rand_retp_mask = self.random_mask(3)
 
-        rand_gg_mask = self.random_mask(3)
-        rand_retp_mask = self.random_mask(3)
+            # fig, ax = plt.subplots()
+            # ax.imshow(rand_gg_mask, cmap='gray')
+            # ax.axis('off')
+            # fig.savefig('/data/jjia/ssc_scoring/image_samples/rand_gg_mask_' + str(self.counter) + '.png')
+            #
+            # fig, ax = plt.subplots()
+            # ax.imshow(rand_retp_mask, cmap='gray')
+            # ax.axis('off')
+            # fig.savefig('/data/jjia/ssc_scoring/image_samples/rand_retp_mask_' + str(self.counter) + '.png')
 
-        fig, ax = plt.subplots()
-        ax.imshow(rand_gg_mask, cmap='gray')
-        ax.axis('off')
-        fig.savefig('/data/jjia/ssc_scoring/image_samples/rand_gg_mask_' + str(self.counter) + '.png')
+            # fig, ax = plt.subplots()
+            # ax.imshow(img_mask, cmap='gray')
+            # ax.axis('off')
+            # fig.savefig('/data/jjia/ssc_scoring/image_samples/img_mask_' + str(self.counter) + '.png')
 
-        fig, ax = plt.subplots()
-        ax.imshow(rand_retp_mask, cmap='gray')
-        ax.axis('off')
-        fig.savefig('/data/jjia/ssc_scoring/image_samples/rand_retp_mask_' + str(self.counter) + '.png')
+            rand_retp_mask *= lung_mask
+            rand_gg_mask *= lung_mask
 
-        fig, ax = plt.subplots()
-        ax.imshow(img_mask, cmap='gray')
-        ax.axis('off')
-        fig.savefig('/data/jjia/ssc_scoring/image_samples/img_mask_' + str(self.counter) + '.png')
+            # fig, ax = plt.subplots()
+            # ax.imshow(rand_gg_mask, cmap='gray')
+            # ax.axis('off')
+            # fig.savefig('/data/jjia/ssc_scoring/image_samples/rand_gg_mask_lung_' + str(self.counter) + '.png')
 
-        rand_retp_mask *= img_mask
-        rand_gg_mask *= img_mask
-
-        fig, ax = plt.subplots()
-        ax.imshow(rand_gg_mask, cmap='gray')
-        ax.axis('off')
-        fig.savefig('/data/jjia/ssc_scoring/image_samples/rand_gg_mask_lung_' + str(self.counter) + '.png')
-
-        fig, ax = plt.subplots()
-        ax.imshow(rand_retp_mask, cmap='gray')
-        ax.axis('off')
-        fig.savefig('/data/jjia/ssc_scoring/image_samples/rand_retp_mask_lung_' + str(self.counter) + '.png')
+            # fig, ax = plt.subplots()
+            # ax.imshow(rand_retp_mask, cmap='gray')
+            # ax.axis('off')
+            # fig.savefig('/data/jjia/ssc_scoring/image_samples/rand_retp_mask_lung_' + str(self.counter) + '.png')
 
 
-        union_mask = rand_gg_mask + rand_retp_mask
-        union_mask[union_mask>0] = 1
+            union_mask = rand_gg_mask + rand_retp_mask
+            union_mask[union_mask>0] = 1
 
-        fig, ax = plt.subplots()
-        ax.imshow(union_mask, cmap='gray')
-        ax.axis('off')
-        fig.savefig('/data/jjia/ssc_scoring/image_samples/union_mask_' + str(self.counter) + '.png')
+            # fig, ax = plt.subplots()
+            # ax.imshow(union_mask, cmap='gray')
+            # ax.axis('off')
+            # fig.savefig('/data/jjia/ssc_scoring/image_samples/union_mask_' + str(self.counter) + '.png')
 
-        intersection_mask = rand_gg_mask * rand_retp_mask
-        gg_exclude_retp = rand_gg_mask - intersection_mask
+            intersection_mask = rand_gg_mask * rand_retp_mask
+            gg_exclude_retp = rand_gg_mask - intersection_mask
 
-        fig, ax = plt.subplots()
-        ax.imshow(intersection_mask, cmap='gray')
-        ax.axis('off')
-        fig.savefig('/data/jjia/ssc_scoring/image_samples/intersection_mask_' + str(self.counter) + '.png')
+            # fig, ax = plt.subplots()
+            # ax.imshow(intersection_mask, cmap='gray')
+            # ax.axis('off')
+            # fig.savefig('/data/jjia/ssc_scoring/image_samples/intersection_mask_' + str(self.counter) + '.png')
 
-        fig, ax = plt.subplots()
-        ax.imshow(gg_exclude_retp, cmap='gray')
-        ax.axis('off')
-        fig.savefig('/data/jjia/ssc_scoring/image_samples/gg_exclude_retp_' + str(self.counter) + '.png')
+            # fig, ax = plt.subplots()
+            # ax.imshow(gg_exclude_retp, cmap='gray')
+            # ax.axis('off')
+            # fig.savefig('/data/jjia/ssc_scoring/image_samples/gg_exclude_retp_' + str(self.counter) + '.png')
 
-        lung_area = np.sum(img_mask)
-        total_dis_area = np.sum(union_mask)
-        gg_area = np.sum(rand_gg_mask)
-        retp_area = np.sum(rand_retp_mask)
+            lung_area = np.sum(lung_mask)
+            total_dis_area = np.sum(union_mask)
+            gg_area = np.sum(rand_gg_mask)
+            retp_area = np.sum(rand_retp_mask)
 
-        y_disext = int(total_dis_area/lung_area * 100)
-        y_gg = int(gg_area/lung_area * 100)
-        y_retp = int(retp_area / lung_area * 100)
+            y_disext = int(total_dis_area/lung_area * 100)
+            y_gg = int(gg_area / lung_area * 100)
+            y_retp = int(retp_area / lung_area * 100)
+            y = np.array([y_disext, y_gg, y_retp])
 
-        y = np.array([y_disext, y_gg, y_retp])
+            if args.bal_filter or self.balanced(y_disext):
+                break
+            else:
+                print("not balanced, re generate image")
+
+
         if np.sum(y)>0:
             smooth_edge = 10
             rand_retp_mask = cv2.blur(rand_retp_mask, (smooth_edge, smooth_edge))
 
-            fig, ax = plt.subplots()
-            ax.imshow(rand_retp_mask, cmap='gray')
-            ax.axis('off')
-            fig.savefig('/data/jjia/ssc_scoring/image_samples/rand_retp_mask_blur_' + str(self.counter) + '.png')
+            # fig, ax = plt.subplots()
+            # ax.imshow(rand_retp_mask, cmap='gray')
+            # ax.axis('off')
+            # fig.savefig('/data/jjia/ssc_scoring/image_samples/rand_retp_mask_blur_' + str(self.counter) + '.png')
 
             retp = rand_retp_mask * self.retp_candidate
 
-            fig, ax = plt.subplots()
-            ax.imshow(retp, cmap='gray')
-            ax.axis('off')
-            fig.savefig('/data/jjia/ssc_scoring/image_samples/retp_' + str(self.counter) + '.png')
+            # fig, ax = plt.subplots()
+            # ax.imshow(retp, cmap='gray')
+            # ax.axis('off')
+            # fig.savefig('/data/jjia/ssc_scoring/image_samples/retp_' + str(self.counter) + '.png')
 
             img_exclude_retp_mask = (1 - rand_retp_mask) * img
 
-            fig, ax = plt.subplots()
-            ax.imshow(img_exclude_retp_mask, cmap='gray')
-            ax.axis('off')
-            fig.savefig('/data/jjia/ssc_scoring/image_samples/img_exclude_retp_mask_' + str(self.counter) + '.png')
+            # fig, ax = plt.subplots()
+            # ax.imshow(img_exclude_retp_mask, cmap='gray')
+            # ax.axis('off')
+            # fig.savefig('/data/jjia/ssc_scoring/image_samples/img_exclude_retp_mask_' + str(self.counter) + '.png')
 
 
             img_wt_retp = retp + img_exclude_retp_mask
 
-            fig, ax = plt.subplots()
-            ax.imshow(img_wt_retp, cmap='gray')
-            ax.axis('off')
-            fig.savefig('/data/jjia/ssc_scoring/image_samples/img_wt_retp_' + str(self.counter) + '.png')
+            # fig, ax = plt.subplots()
+            # ax.imshow(img_wt_retp, cmap='gray')
+            # ax.axis('off')
+            # fig.savefig('/data/jjia/ssc_scoring/image_samples/img_wt_retp_' + str(self.counter) + '.png')
 
             # rand_gg_mask = cv2.blur(rand_gg_mask, (smooth_edge, smooth_edge))
             gg = rand_gg_mask * img_wt_retp
 
-            fig, ax = plt.subplots()
-            ax.imshow(gg, cmap='gray')
-            ax.axis('off')
-            fig.savefig('/data/jjia/ssc_scoring/image_samples/gg_' + str(self.counter) + '.png')
+            # fig, ax = plt.subplots()
+            # ax.imshow(gg, cmap='gray')
+            # ax.axis('off')
+            # fig.savefig('/data/jjia/ssc_scoring/image_samples/gg_' + str(self.counter) + '.png')
 
             gg_exclude_retp_ = gg_exclude_retp * gg
 
-            fig, ax = plt.subplots()
-            ax.imshow(gg_exclude_retp_, cmap='gray')
-            ax.axis('off')
-            fig.savefig('/data/jjia/ssc_scoring/image_samples/gg_exclude_retp_' + str(self.counter) + '.png')
+            # fig, ax = plt.subplots()
+            # ax.imshow(gg_exclude_retp_, cmap='gray')
+            # ax.axis('off')
+            # fig.savefig('/data/jjia/ssc_scoring/image_samples/gg_exclude_retp_' + str(self.counter) + '.png')
 
             # gg = self.add_noise(gg)  # before blur, apply noise to increase the average HU value
-            gg[gg_exclude_retp>0] += 0.1  # increase HU value from -900 to -600 (300/3000=0.1)
+            gg[gg_exclude_retp>0] += args.gg_increase  # increase HU value from -900 to -600 (300/3000=0.1)
 
 
 
-            fig, ax = plt.subplots()
-            ax.imshow(gg, cmap='gray')
-            ax.axis('off')
-            fig.savefig('/data/jjia/ssc_scoring/image_samples/gg_lighter_' + str(self.counter) + '.png')
+            # fig, ax = plt.subplots()
+            # ax.imshow(gg, cmap='gray')
+            # ax.axis('off')
+            # fig.savefig('/data/jjia/ssc_scoring/image_samples/gg_lighter_' + str(self.counter) + '.png')
 
             gg = rand_gg_mask * gg
             gg_blur = 3
             gg = cv2.blur(gg, (gg_blur, gg_blur))
 
-            fig, ax = plt.subplots()
-            ax.imshow(gg, cmap='gray')
-            ax.axis('off')
-            fig.savefig('/data/jjia/ssc_scoring/image_samples/gg_lighter_blur_' + str(self.counter) + '.png')
+            # fig, ax = plt.subplots()
+            # ax.imshow(gg, cmap='gray')
+            # ax.axis('off')
+            # fig.savefig('/data/jjia/ssc_scoring/image_samples/gg_lighter_blur_' + str(self.counter) + '.png')
 
             img_exclude_gg_mask = (1 - rand_gg_mask) * img_wt_retp
             img_wt_retp_gg = img_exclude_gg_mask + gg
-
-            fig, ax = plt.subplots()
-            ax.imshow(img_wt_retp_gg, cmap='gray')
-            ax.axis('off')
-            fig.savefig('/data/jjia/ssc_scoring/image_samples/img_wt_retp_gg_' + str(self.counter) + '.png')
+            #
+            # fig, ax = plt.subplots()
+            # ax.imshow(img_wt_retp_gg, cmap='gray')
+            # ax.axis('off')
+            # fig.savefig('/data/jjia/ssc_scoring/image_samples/img_wt_retp_gg_' + str(self.counter) + '.png')
 
             return torch.from_numpy(img_wt_retp_gg.astype(np.float32)), torch.tensor(y.astype(np.float32))
         else:
@@ -1245,9 +1301,11 @@ def ssc_transformd(mode='train', synthesis=False):
     scale = 0.05
 
     xforms = []
-    if mode == 'train':
+    if mode in ['train', 'validaug']:
         if synthesis:
-            xforms.append(SysthesisNewSampled(keys=keys, retp_fpath="/data/jjia/ssc_scoring/dataset/special_samples/retp.mha"))
+            xforms.append(SysthesisNewSampled(keys=keys,
+                                              retp_fpath="/data/jjia/ssc_scoring/dataset/special_samples/retp.mha",
+                                              sys_pro=args.sys_pro, mode=mode))
         xforms.extend([
             AddChanneld(keys),
             RandomAffined(keys=keys, degrees=rotation, translate=(shift, shift), scale=(1 - scale, 1 + scale)),
@@ -1396,6 +1454,10 @@ def start_run(mode, net, dataloader, amp, epochs, device, loss_fun, loss_fun_mae
     total_loss = 0
     total_loss_mae = 0
     total_loss_mae_end5 = 0
+
+    # with torch.profiler.record_function("training_function"):
+    t0 = time.time()
+    t_load_data, t_to_device, t_train_per_step = [], [], []
     for data in dataloader:
         if 'label_key' not in data:
             batch_x, batch_y = data['image_key'], data['image_key']
@@ -1403,9 +1465,18 @@ def start_run(mode, net, dataloader, amp, epochs, device, loss_fun, loss_fun_mae
             batch_x, batch_y = data['image_key'], data['label_key']
             print('batch_y is: ')
             print(batch_y)
+        t1 = time.time()
+        t_load_data.append(t1 - t0)
+
+
+        # with torch.profiler.record_function("to_device"):
 
         batch_x = batch_x.to(device)
         batch_y = batch_y.to(device)
+
+        t2 = time.time()
+        t_to_device.append(t2 - t1)
+
         print(f"batch_x.shape: {batch_x.shape}, batch_y.shape: {batch_y.shape} ")
         if args.r_c == "c":
             batch_y = batch_y.type(torch.LongTensor)  # crossentropy requires LongTensor
@@ -1462,7 +1533,11 @@ def start_run(mode, net, dataloader, amp, epochs, device, loss_fun, loss_fun_mae
                 loss.backward()
                 opt.step()
 
+        t3 = time.time()
+        t_train_per_step.append(t3 - t2)
+
         print(f"loss: {loss.item()}, pred.shape: {pred.shape}")
+        # with torch.profiler.record_function("average_loss"):
 
         total_loss += loss.item()
         total_loss_mae += loss_mae.item()
@@ -1475,6 +1550,15 @@ def start_run(mode, net, dataloader, amp, epochs, device, loss_fun, loss_fun_mae
                 p1.start()
             except RuntimeError as e:
                 print(e)
+
+        # prof.step()
+        t0 = t3  # reset the t0
+
+    if "t_load_data" not in log_dict:
+        t_load_data, t_to_device, t_train_per_step = mean(t_load_data), mean(t_to_device), mean(t_train_per_step)
+        log_dict.update({"t_load_data": t_load_data,
+                         "t_to_device": t_to_device,
+                         "t_train_per_step": t_train_per_step})
 
     ave_loss = total_loss / batch_idx
     ave_loss_mae = total_loss_mae / batch_idx
@@ -1694,6 +1778,7 @@ def train(id_: int):
     log_dict['amp'] = amp
 
     net = get_net(args.net, 3) if args.r_c == "r" else get_net(args.net, 21)
+
     if args.train_recon:  # use ReconNet and corresponding dataset
         net = ReconNet(net)
 
@@ -1709,28 +1794,28 @@ def train(id_: int):
         vd_data_aug = ReconDatasetd(vd_x[:10], transform=recon_transformd('train'))
         sampler = None
     else:
-        tr_x, tr_y, vd_x, vd_y, ts_x, ts_y = prepare_data(mypath)
-        tr_x, tr_y, vd_x, vd_y, ts_x, ts_y = tr_x[:100], tr_y[:100], vd_x[:100], vd_y[:100], ts_x[:100], ts_y[:100]
-        tr_dataset = SysDataset(tr_x, tr_y, transform=ssc_transformd("train", synthesis=args.sys), synthesis=args.sys)
-        vd_data_aug = SysDataset(vd_x, vd_y, transform=ssc_transformd("train", synthesis=args.sys), synthesis=args.sys)
-        vd_dataset = SysDataset(vd_x, vd_y, transform=ssc_transformd("valid", synthesis=False), synthesis=False)
-        ts_dataset = SysDataset(ts_x, ts_y, transform=ssc_transformd("test", synthesis=False), synthesis=False)  # valid original data
-        sampler = sampler_by_disext(tr_y) if args.sampler else None
-        print(f'sampler is {sampler}')
+                tr_x, tr_y, vd_x, vd_y, ts_x, ts_y = prepare_data(mypath)
+                # tr_x, tr_y, vd_x, vd_y, ts_x, ts_y = tr_x[:100], tr_y[:100], vd_x[:100], vd_y[:100], ts_x[:100], ts_y[:100]
+                tr_dataset = SysDataset(tr_x, tr_y, transform=ssc_transformd("train", synthesis=args.sys), synthesis=args.sys)
+                vd_data_aug = SysDataset(vd_x, vd_y, transform=ssc_transformd("validaug", synthesis=args.sys), synthesis=args.sys)
+                vd_dataset = SysDataset(vd_x, vd_y, transform=ssc_transformd("valid", synthesis=False), synthesis=False)
+                ts_dataset = SysDataset(ts_x, ts_y, transform=ssc_transformd("test", synthesis=False), synthesis=False)  # valid original data
+                sampler = sampler_by_disext(tr_y) if args.sampler else None
+                print(f'sampler is {sampler}')
 
-        # else:
-        #     raise Exception("synthesis_data can not be set with sampler !")
+                # else:
+                #     raise Exception("synthesis_data can not be set with sampler !")
 
     batch_size = 10
     log_dict['batch_size'] = batch_size
     tr_shuffle = True if sampler is None else False
     train_dataloader = DataLoader(tr_dataset, batch_size=batch_size, shuffle=tr_shuffle, num_workers=args.workers,
-                                  sampler=sampler)
-    validaug_dataloader = DataLoader(vd_data_aug, batch_size=batch_size, shuffle=False, num_workers=args.workers)
+                                  sampler=sampler, pin_memory=True)
+    validaug_dataloader = DataLoader(vd_data_aug, batch_size=batch_size, shuffle=False, num_workers=args.workers, pin_memory=True)
 
-    valid_dataloader = DataLoader(vd_dataset, batch_size=batch_size, shuffle=False, num_workers=args.workers)
+    valid_dataloader = DataLoader(vd_dataset, batch_size=batch_size, shuffle=False, num_workers=args.workers, pin_memory=True)
     # valid_dataloader = train_dataloader
-    test_dataloader = DataLoader(ts_dataset, batch_size=batch_size, shuffle=False, num_workers=args.workers)
+    test_dataloader = DataLoader(ts_dataset, batch_size=batch_size, shuffle=False, num_workers=args.workers, pin_memory=True)
 
 
     if args.eval_id:
@@ -1769,14 +1854,22 @@ def train(id_: int):
 
     scaler = torch.cuda.amp.GradScaler() if amp else None
     epochs = args.epochs
+
+    # with torch.profiler.profile(schedule=torch.profiler.schedule(wait=1, warmup=1, active=2),) as prof:
+    # with torch.profiler.profile(schedule=torch.profiler.schedule(wait=1, warmup=1, active=10, repeat=0),
+    #                             record_shapes=True, profile_memory=True, with_stack=True) as prof:
     for i in range(epochs):  # 20000 epochs
         start_run('train', net, train_dataloader, amp, epochs, device, loss_fun, loss_fun_mae, opt, scaler, mypath, i)
+
         # run the validation
         if (i % args.valid_period == 0) or (i > epochs * 0.8):
+            # with torch.profiler.record_function("valid_validaug_test"):
             valid_mae_best = start_run('valid', net, valid_dataloader, amp, epochs, device, loss_fun, loss_fun_mae, opt,
                                        scaler, mypath, i, valid_mae_best)
             start_run('validaug', net, validaug_dataloader, amp, epochs, device, loss_fun, loss_fun_mae, opt, scaler, mypath, i)
             start_run('test', net, test_dataloader, amp, epochs, device, loss_fun, loss_fun_mae, opt, scaler, mypath, i)
+    print('start save trace')
+    # prof.export_chrome_trace("trace_18_full.json")
 
     data_loaders = {'train': train_dataloader, 'valid': valid_dataloader, 'validaug': validaug_dataloader, 'test': test_dataloader}
     record_best_preds(net, data_loaders, mypath, device, amp)
@@ -1795,7 +1888,6 @@ def train(id_: int):
                 out_dt = confusion.confusion(mypath.label(mode), mypath.pred_end5(mode))
                 log_dict.update(out_dt)
                 icc_ = futil.icc(mypath.label(mode), mypath.pred_end5(mode))
-                log_dict.update(icc_)
                 log_dict.update(icc_)
         except:
             pass
@@ -2010,5 +2102,7 @@ def check_time_difference(t1: datetime, t2: datetime):
 if __name__ == "__main__":
     record_file = 'records_700.csv'
     id = record_experiment(record_file)
+
     train(id)
+
     record_experiment(record_file, current_id=id)

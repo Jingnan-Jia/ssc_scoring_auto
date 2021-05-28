@@ -614,8 +614,10 @@ class CropLevelRegiond:
         if end > d['image_key'].shape[0]:
             end = d['image_key'].shape[0]
         d['image_key'] = d['image_key'][start: end].astype(np.float32)
+
         d['label_key'] = d['label_key'] - start
         d['label_key'] = np.array(d['label_key']).reshape(-1, ).astype(np.float32)
+
         d['world_key'] = d['world_key'][0]
         d['world_key'] = np.array(d['world_key']).reshape(-1, ).astype(np.float32)
 

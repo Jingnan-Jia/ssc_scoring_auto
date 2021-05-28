@@ -8,8 +8,8 @@ import argparse
 
 parser = argparse.ArgumentParser(description="SSc score prediction.")
 
-parser.add_argument('--mode', choices=('train', 'infer', 'continue_train', 'transfer_learning'), help='mode', type=str, default='infer')
-parser.add_argument('--eval_id', help='id used for inference, or continue_train', type=int, default=1079)
+parser.add_argument('--mode', choices=('train', 'infer', 'continue_train', 'transfer_learning'), help='mode', type=str, default='train')
+parser.add_argument('--eval_id', help='id used for inference, or continue_train', type=int, default=0)
 parser.add_argument('--train_recon', choices=(1, 0), help='if use ReconNet and the dataset for ReconNet', type=int, default=0)
 
 parser.add_argument('--net', choices=('vgg11_bn', 'cnn3fc1', 'cnn2fc1', 'vgg16', 'vgg19','resnet18', 'resnext50_32x4d', 'resnext101_32x8d'), help='network name', type=str,
@@ -27,6 +27,8 @@ parser.add_argument('--level', choices=(1, 2, 3, 4, 5, 0), help='level of data, 
 
 parser.add_argument('--sampler', choices=(1, 0), help='if customer sampler?', type=int, default=0)
 parser.add_argument('--sys', choices=(1, 0), help='if synthesis_data?', type=int, default=1)
+parser.add_argument('--sys_pro', help='Probobility of synthesis_data?', type=float, default=0.5)
+
 parser.add_argument('--valid_period', help='how many epochs between 2 validation', type=int, default=5)
 
 parser.add_argument('--workers',  help='number of workers for dataloader', type=int, default=10)
@@ -37,8 +39,11 @@ parser.add_argument('--masked_by_lung', choices=(1, 0), help='if slices are mask
 parser.add_argument('--loss', choices=('mse', 'mae', 'smooth_mae', 'mse+mae', 'msehigher'), help='mode', type=str,
                     default='mse')
 parser.add_argument('--pretrained', choices=(1, 0), help='pretrained or not', type=int, default=1)
-parser.add_argument('--epochs', help='total epochs', type=int, default=1000)
+parser.add_argument('--epochs', help='total epochs', type=int, default=200)
 parser.add_argument('--weight_decay', help='L2 regularization', type=float, default=0.0001)  # must be a float number !
+parser.add_argument('--gg_increase', help='gg increase ratio', type=float, default=0.1)  # must be a float number !
+
+parser.add_argument('--bal_filter', choices=(1, 0), help='balanced filter? or not', type=int, default=1)
 
 parser.add_argument('--outfile', help='output file when running by script instead of pycharm', type=str)
 parser.add_argument('--hostname', help='hostname of the server', type=str)
