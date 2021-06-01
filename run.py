@@ -45,11 +45,12 @@ import threading
 LogType = Optional[Union[int, float, str]]  # int includes bool
 log_dict: Dict[str, LogType] = {}  # a global dict to store variables saved to log files
 manager = Manager()
-train_label_numbers = manager.dict({label: key for label, key in zip(np.arange(0, 21) * 5, np.zeros((21,)))})
+train_label_numbers = manager.dict({label: key for label, key in zip(np.arange(0, 21) * 5, np.zeros((21,)).astype(np.int))})
 train_lock = Lock()
-validaug_label_numbers = manager.dict({label: key for label, key in zip(np.arange(0, 21) * 5, np.zeros((21,)))})
+validaug_label_numbers = manager.dict({label: key for label, key in zip(np.arange(0, 21) * 5, np.zeros((21,)).astype(np.int))})
 validaug_lock = Lock()
-
+ori_nb = manager.Value('ori_nb', 0)
+sys_nb = manager.Value('sys_nb', 0)
 
 def summary(model: nn.Module, input_size: Tuple[int, ...], batch_size=-1, device="cpu"):
     def register_hook(module):
@@ -853,31 +854,26 @@ class MyNormalized(MapTransform):
 
 
 class SysthesisNewSampled(MapTransform):
-    def __init__(self, keys, retp_fpath, sys_pro, mode):
+    def __init__(self, keys, retp_fpath,gg_fpath, mode):
         super().__init__(keys)
-        self.sys_pro = sys_pro
-        self.mode = mode
-        self.retp_fpath = retp_fpath# retp will generated from its egg
-        self.retp_ori_image_fpath = retp_fpath.split('.mha')[0] + '_ori.mha'
-        retp_egg = futil.load_itk(self.retp_fpath)
-        retp_ori = futil.load_itk(self.retp_ori_image_fpath)
-        # normalize the egg using the original image information
-        retp_egg = (retp_egg - np.min(retp_ori)) / (np.max(retp_ori) - np.min(retp_ori))
-
-        retp_minnorv = np.vstack((np.flip(retp_egg), np.flip(retp_egg, 0)))
-        retp_minnorh = np.hstack((retp_minnorv, np.flip(retp_minnorv, 1)))
-
-
-        cell_size = retp_minnorh.shape
+        # self.sys_ratio = sys_ratio
         self.image_size = 512
-        nb_row, nb_col = self.image_size // cell_size[0]*2, self.image_size // cell_size[1]*2  # big mask for crop
-        retp_temp = np.hstack(([retp_minnorh] * nb_col))
-        self.retp_temp = np.vstack(([retp_temp] * nb_row))
-
         self.random_affine = RandomAffine(degrees=180, translate=(0.1, 0.1), scale=(1 - 0.5, 1 + 0.1))
         self.center_crop = CenterCrop(self.image_size)
+        
+        self.sys_pro = args.sys_pro_in_0 if args.sys_pro_in_0 else 20/21
+
+
+        self.mode = mode
+        self.retp_fpath = retp_fpath  # retp will generated from its egg
+        self.gg_fpath = gg_fpath
+
+        self.retp_temp = self.generate_candidate(self.retp_fpath)
+        self.gg_temp = self.generate_candidate(self.gg_fpath)
 
         self.retp_candidate = self.rand_affine_crop(self.retp_temp)
+        self.gg_candidate = self.rand_affine_crop(self.gg_temp)
+
         self.counter = 0
         self.systh_y = []
         if self.mode == "train":
@@ -886,6 +882,23 @@ class SysthesisNewSampled(MapTransform):
             self.label_numbers = validaug_label_numbers
         else:
             raise Exception("mode is wrong for synthetic data", self.mode)
+
+    def generate_candidate(self, fpath):
+        ori_image_fpath = fpath.split('.mha')[0] + '_ori.mha'
+        egg = futil.load_itk(fpath)
+        ori = futil.load_itk(ori_image_fpath)
+        # normalize the egg using the original image information
+        egg = (egg - np.min(ori)) / (np.max(ori) - np.min(ori))
+
+        minnorv = np.vstack((np.flip(egg), np.flip(egg, 0)))
+        minnorh = np.hstack((minnorv, np.flip(minnorv, 1)))
+
+        cell_size = minnorh.shape
+        nb_row, nb_col = self.image_size // cell_size[0] * 2, self.image_size // cell_size[1] * 2  # big mask for crop
+        temp = np.hstack(([minnorh] * nb_col))
+        temp = np.vstack(([temp] * nb_row))
+        return temp
+
 
 
     def rand_affine_crop(self, retp_temp: np.ndarray):
@@ -898,8 +911,13 @@ class SysthesisNewSampled(MapTransform):
     def balanced(self, label):
         category = label // 5 * 5
         average = mean(list(self.label_numbers.values()))
+        min_account = min(list(self.label_numbers.values()))
+        max_account = max(list(self.label_numbers.values()))
 
-        if self.label_numbers[category] > average * 1.1:
+        print("min account", min_account, "max account", max_account)
+        print("generated label", category, 'all:', list(self.label_numbers.values()))
+
+        if self.label_numbers[category] > min_account * 1.5:
             return False
         else:
             return True
@@ -909,32 +927,43 @@ class SysthesisNewSampled(MapTransform):
         # with self.lock:
         if self.mode == "train":
             with train_lock:
-            # train_lock.acquire()
-            # with train_lock:
                 train_label_numbers[category] = train_label_numbers[category] + 1
                 print(sum(train_label_numbers.values()))
-            # train_lock.release()
         else:
-            validaug_lock.acquire()
-            validaug_label_numbers[category] += 1
-            print(sum(validaug_label_numbers.values()))
-
-            # print(validaug_label_numbers)
-            validaug_lock.release()
+            with validaug_lock:
+                validaug_label_numbers[category] += 1
+                print(sum(validaug_label_numbers.values()))
 
     def __call__(self, data):
         d = dict(data)
+        print("ori label is: " + str(d['label_key']))
 
         if d['label_key'][0].item() == 0:
+
             tmp = random.random()
-            if tmp > self.sys_pro:
+            # print("tmp random is : " + str(tmp) + " self.sys_pro: " + str(self.sys_pro))
+            if tmp < self.sys_pro:
+                with train_lock:
+                    sys_nb.value += 1
+                    print("sys_nb: " + str(sys_nb.value))
                 for key in self.keys:
                     d[key], d['label_key'] = self.systhesis(d[key], d['lung_mask_key'])
-                    print("after systhesis, label is ",  d['label_key'])
+                    # with train_lock:
+                    print("after systhesis, label is "+str(d['label_key'])+str("\n"))
             else:
-                print("No need for systhesis, label is ", d['label_key'])
+                with train_lock:
+                    ori_nb.value += 1
+                    print("ori_nb: " + str(ori_nb.value))
+                # with train_lock:
+                print("No need for systhesis, label is "+str( d['label_key'])+str("\n"))
         else:
-            print("No need for systhesis, label is ", d['label_key'])
+            with train_lock:
+                ori_nb.value += 1
+                print("ori_nb: " + str(ori_nb.value))
+
+
+            # with train_lock:
+            print("No need for systhesis, label is "+str(d['label_key'])+str("\n"))
 
         self.account_label(d['label_key'][0].item())
         return d
@@ -953,7 +982,10 @@ class SysthesisNewSampled(MapTransform):
         for i in range(nb_ellipse):
             angle = random.randint(0, 180)
             center_coordinates = (random.randint(0, self.image_size), random.randint(0, self.image_size))
-            axlen = random.randint(1, 100)
+            if random.random() > 0.5:
+                axlen = random.randint(1, 100)
+            else:
+                axlen = random.randint(1, 200)
             axesLength = (axlen, int(axlen * (1+random.random()) ))
 
             image = cv2.ellipse(fig_, center_coordinates, axesLength, angle,
@@ -972,159 +1004,233 @@ class SysthesisNewSampled(MapTransform):
         if self.counter == 100:  # update self.retp_candidate
             self.counter = 0
             self.retp_candidate = self.rand_affine_crop(self.retp_temp)
+            self.gg_candidate = self.rand_affine_crop(self.gg_temp)
 
-        # fig, ax = plt.subplots()
-        # ax.imshow(img, cmap='gray')
-        # ax.axis('off')
-        # fig.savefig('/data/jjia/ssc_scoring/image_samples/img_' + str(self.counter) + '.png')
-        #
-        # fig, ax = plt.subplots()
-        # ax.imshow(self.retp_candidate, cmap='gray')
-        # ax.axis('off')
-        # fig.savefig('/data/jjia/ssc_scoring/image_samples/retp_candidate_' + str(self.counter) + '.png')
+        save_img: bool = False
+        if save_img:
+            fig, ax = plt.subplots()
+            ax.imshow(img, cmap='gray')
+            ax.axis('off')
+            fig.savefig('/data/jjia/ssc_scoring/image_samples/1_ori_img_' + str(self.counter) + '.png')
+
+            fig, ax = plt.subplots()
+            ax.imshow(self.retp_candidate, cmap='gray')
+            ax.axis('off')
+            fig.savefig('/data/jjia/ssc_scoring/image_samples/2_retp_candidate_' + str(self.counter) + '.png')
 
         while(1):
             rand_gg_mask = self.random_mask(3)
             rand_retp_mask = self.random_mask(3)
+            if save_img:
+                fig, ax = plt.subplots()
+                ax.imshow(rand_gg_mask, cmap='gray')
+                ax.axis('off')
+                fig.savefig('/data/jjia/ssc_scoring/image_samples/3_rand_gg_mask_' + str(self.counter) + '.png')
 
-            # fig, ax = plt.subplots()
-            # ax.imshow(rand_gg_mask, cmap='gray')
-            # ax.axis('off')
-            # fig.savefig('/data/jjia/ssc_scoring/image_samples/rand_gg_mask_' + str(self.counter) + '.png')
-            #
-            # fig, ax = plt.subplots()
-            # ax.imshow(rand_retp_mask, cmap='gray')
-            # ax.axis('off')
-            # fig.savefig('/data/jjia/ssc_scoring/image_samples/rand_retp_mask_' + str(self.counter) + '.png')
+                fig, ax = plt.subplots()
+                ax.imshow(rand_retp_mask, cmap='gray')
+                ax.axis('off')
+                fig.savefig('/data/jjia/ssc_scoring/image_samples/4_rand_retp_mask_' + str(self.counter) + '.png')
 
-            # fig, ax = plt.subplots()
-            # ax.imshow(img_mask, cmap='gray')
-            # ax.axis('off')
-            # fig.savefig('/data/jjia/ssc_scoring/image_samples/img_mask_' + str(self.counter) + '.png')
+                fig, ax = plt.subplots()
+                ax.imshow(lung_mask, cmap='gray')
+                ax.axis('off')
+                fig.savefig('/data/jjia/ssc_scoring/image_samples/5_lung_mask_' + str(self.counter) + '.png')
 
             rand_retp_mask *= lung_mask
             rand_gg_mask *= lung_mask
+            if save_img:
+                fig, ax = plt.subplots()
+                ax.imshow(rand_gg_mask, cmap='gray')
+                ax.axis('off')
+                fig.savefig('/data/jjia/ssc_scoring/image_samples/6_gg_mask_lung_' + str(self.counter) + '.png')
 
-            # fig, ax = plt.subplots()
-            # ax.imshow(rand_gg_mask, cmap='gray')
-            # ax.axis('off')
-            # fig.savefig('/data/jjia/ssc_scoring/image_samples/rand_gg_mask_lung_' + str(self.counter) + '.png')
-
-            # fig, ax = plt.subplots()
-            # ax.imshow(rand_retp_mask, cmap='gray')
-            # ax.axis('off')
-            # fig.savefig('/data/jjia/ssc_scoring/image_samples/rand_retp_mask_lung_' + str(self.counter) + '.png')
+                fig, ax = plt.subplots()
+                ax.imshow(rand_retp_mask, cmap='gray')
+                ax.axis('off')
+                fig.savefig('/data/jjia/ssc_scoring/image_samples/7_retp_mask_lung_' + str(self.counter) + '.png')
 
 
             union_mask = rand_gg_mask + rand_retp_mask
             union_mask[union_mask>0] = 1
-
-            # fig, ax = plt.subplots()
-            # ax.imshow(union_mask, cmap='gray')
-            # ax.axis('off')
-            # fig.savefig('/data/jjia/ssc_scoring/image_samples/union_mask_' + str(self.counter) + '.png')
+            if save_img:
+                fig, ax = plt.subplots()
+                ax.imshow(union_mask, cmap='gray')
+                ax.axis('off')
+                fig.savefig('/data/jjia/ssc_scoring/image_samples/8_union_mask_lung_' + str(self.counter) + '.png')
 
             intersection_mask = rand_gg_mask * rand_retp_mask
             gg_exclude_retp = rand_gg_mask - intersection_mask
+            if save_img:
+                fig, ax = plt.subplots()
+                ax.imshow(intersection_mask, cmap='gray')
+                ax.axis('off')
+                fig.savefig('/data/jjia/ssc_scoring/image_samples/9_intersection_mask_lung_' + str(self.counter) + '.png')
 
-            # fig, ax = plt.subplots()
-            # ax.imshow(intersection_mask, cmap='gray')
-            # ax.axis('off')
-            # fig.savefig('/data/jjia/ssc_scoring/image_samples/intersection_mask_' + str(self.counter) + '.png')
+                fig, ax = plt.subplots()
+                ax.imshow(gg_exclude_retp, cmap='gray')
+                ax.axis('off')
+                fig.savefig('/data/jjia/ssc_scoring/image_samples/10_gg_exclude_retp_' + str(self.counter) + '.png')
 
-            # fig, ax = plt.subplots()
-            # ax.imshow(gg_exclude_retp, cmap='gray')
-            # ax.axis('off')
-            # fig.savefig('/data/jjia/ssc_scoring/image_samples/gg_exclude_retp_' + str(self.counter) + '.png')
+            # lung_area = np.sum(lung_mask)
+            # total_dis_area = np.sum(union_mask)
+            # gg_area = np.sum(rand_gg_mask)
+            # retp_area = np.sum(rand_retp_mask)
+            #
+            # y_disext = int(total_dis_area/lung_area * 100)
+            # y_gg = int(gg_area / lung_area * 100)
+            # y_retp = int(retp_area / lung_area * 100)
+            # y = np.array([y_disext, y_gg, y_retp])
+
+            smooth_edge = args.retp_blur
+            rand_retp_mask = cv2.blur(rand_retp_mask, (smooth_edge, smooth_edge))
+            if save_img:
+                fig, ax = plt.subplots()
+                ax.imshow(rand_retp_mask, cmap='gray')
+                ax.axis('off')
+                fig.savefig('/data/jjia/ssc_scoring/image_samples/11_retp_mask_blur_' + str(self.counter) + '.png')
+
+            smooth_edge = args.gg_blur
+            rand_gg_mask = cv2.blur(rand_gg_mask, (smooth_edge, smooth_edge))
+            if save_img:
+                fig, ax = plt.subplots()
+                ax.imshow(rand_gg_mask, cmap='gray')
+                ax.axis('off')
+                fig.savefig('/data/jjia/ssc_scoring/image_samples/11_gg_mask_blur_' + str(self.counter) + '.png')
+
+            rand_retp_mask[rand_retp_mask > 0] = 1
+            rand_gg_mask[rand_gg_mask > 0] = 1
+            rand_retp_mask = rand_retp_mask * lung_mask
+            rand_gg_mask = rand_gg_mask * lung_mask
+
+            union_mask = rand_gg_mask + rand_retp_mask
+            union_mask[union_mask > 0] = 1
 
             lung_area = np.sum(lung_mask)
             total_dis_area = np.sum(union_mask)
             gg_area = np.sum(rand_gg_mask)
             retp_area = np.sum(rand_retp_mask)
 
-            y_disext = int(total_dis_area/lung_area * 100)
+            y_disext = int(total_dis_area / lung_area * 100)
             y_gg = int(gg_area / lung_area * 100)
             y_retp = int(retp_area / lung_area * 100)
+            # print("old y: ", y)
             y = np.array([y_disext, y_gg, y_retp])
+            print("new y: ", y)
 
-            if args.bal_filter or self.balanced(y_disext):
-                break
+            if args.sampler:
+                if self.balanced(y_disext):
+                    break
+                else:
+                    print("not balanced, re generate image")
             else:
-                print("not balanced, re generate image")
+                break
 
 
         if np.sum(y)>0:
-            smooth_edge = 10
-            rand_retp_mask = cv2.blur(rand_retp_mask, (smooth_edge, smooth_edge))
 
-            # fig, ax = plt.subplots()
-            # ax.imshow(rand_retp_mask, cmap='gray')
-            # ax.axis('off')
-            # fig.savefig('/data/jjia/ssc_scoring/image_samples/rand_retp_mask_blur_' + str(self.counter) + '.png')
 
             retp = rand_retp_mask * self.retp_candidate
-
-            # fig, ax = plt.subplots()
-            # ax.imshow(retp, cmap='gray')
-            # ax.axis('off')
-            # fig.savefig('/data/jjia/ssc_scoring/image_samples/retp_' + str(self.counter) + '.png')
+            if save_img:
+                fig, ax = plt.subplots()
+                ax.imshow(retp, cmap='gray')
+                ax.axis('off')
+                fig.savefig('/data/jjia/ssc_scoring/image_samples/12_retp_' + str(self.counter) + '.png')
 
             img_exclude_retp_mask = (1 - rand_retp_mask) * img
-
-            # fig, ax = plt.subplots()
-            # ax.imshow(img_exclude_retp_mask, cmap='gray')
-            # ax.axis('off')
-            # fig.savefig('/data/jjia/ssc_scoring/image_samples/img_exclude_retp_mask_' + str(self.counter) + '.png')
-
+            if save_img:
+                fig, ax = plt.subplots()
+                ax.imshow(img_exclude_retp_mask, cmap='gray')
+                ax.axis('off')
+                fig.savefig('/data/jjia/ssc_scoring/image_samples/13_img_exclude_retp_mask_' + str(self.counter) + '.png')
 
             img_wt_retp = retp + img_exclude_retp_mask
 
-            # fig, ax = plt.subplots()
-            # ax.imshow(img_wt_retp, cmap='gray')
-            # ax.axis('off')
-            # fig.savefig('/data/jjia/ssc_scoring/image_samples/img_wt_retp_' + str(self.counter) + '.png')
-
-            # rand_gg_mask = cv2.blur(rand_gg_mask, (smooth_edge, smooth_edge))
-            gg = rand_gg_mask * img_wt_retp
-
-            # fig, ax = plt.subplots()
-            # ax.imshow(gg, cmap='gray')
-            # ax.axis('off')
-            # fig.savefig('/data/jjia/ssc_scoring/image_samples/gg_' + str(self.counter) + '.png')
-
-            gg_exclude_retp_ = gg_exclude_retp * gg
-
-            # fig, ax = plt.subplots()
-            # ax.imshow(gg_exclude_retp_, cmap='gray')
-            # ax.axis('off')
-            # fig.savefig('/data/jjia/ssc_scoring/image_samples/gg_exclude_retp_' + str(self.counter) + '.png')
-
-            # gg = self.add_noise(gg)  # before blur, apply noise to increase the average HU value
-            gg[gg_exclude_retp>0] += args.gg_increase  # increase HU value from -900 to -600 (300/3000=0.1)
+            if save_img:
+                fig, ax = plt.subplots()
+                ax.imshow(img_wt_retp, cmap='gray')
+                ax.axis('off')
+                fig.savefig('/data/jjia/ssc_scoring/image_samples/14_img_wt_retp_' + str(self.counter) + '.png')
+            if args.gen_gg_as_retp:
 
 
+                gg = rand_gg_mask * self.gg_candidate
+                if save_img:
+                    fig, ax = plt.subplots()
+                    ax.imshow(gg, cmap='gray')
+                    ax.axis('off')
+                    fig.savefig('/data/jjia/ssc_scoring/image_samples/12_gg_' + str(self.counter) + '.png')
 
-            # fig, ax = plt.subplots()
-            # ax.imshow(gg, cmap='gray')
-            # ax.axis('off')
-            # fig.savefig('/data/jjia/ssc_scoring/image_samples/gg_lighter_' + str(self.counter) + '.png')
+                img_exclude_gg_mask = (1 - rand_gg_mask) * img_wt_retp
+                if save_img:
+                    fig, ax = plt.subplots()
+                    ax.imshow(img_exclude_gg_mask, cmap='gray')
+                    ax.axis('off')
+                    fig.savefig(
+                        '/data/jjia/ssc_scoring/image_samples/13_img_exclude_gg_mask_' + str(self.counter) + '.png')
 
-            gg = rand_gg_mask * gg
-            gg_blur = 3
-            gg = cv2.blur(gg, (gg_blur, gg_blur))
+                img_wt_retp_gg = gg + img_exclude_gg_mask
 
-            # fig, ax = plt.subplots()
-            # ax.imshow(gg, cmap='gray')
-            # ax.axis('off')
-            # fig.savefig('/data/jjia/ssc_scoring/image_samples/gg_lighter_blur_' + str(self.counter) + '.png')
+                if save_img:
+                    fig, ax = plt.subplots()
+                    ax.imshow(img_wt_retp_gg, cmap='gray')
+                    ax.axis('off')
+                    fig.savefig('/data/jjia/ssc_scoring/image_samples/14_img_wt_retp_gg_' + str(self.counter) + '.png')
+            else:
+                smooth_edge = args.gg_blur
+                rand_gg_mask = cv2.blur(rand_gg_mask, (smooth_edge, smooth_edge))
+                if save_img:
+                    fig, ax = plt.subplots()
+                    ax.imshow(rand_gg_mask, cmap='gray')
+                    ax.axis('off')
+                    fig.savefig('/data/jjia/ssc_scoring/image_samples/15_gg_mask_blur_' + str(self.counter) + '.png')
 
-            img_exclude_gg_mask = (1 - rand_gg_mask) * img_wt_retp
-            img_wt_retp_gg = img_exclude_gg_mask + gg
-            #
-            # fig, ax = plt.subplots()
-            # ax.imshow(img_wt_retp_gg, cmap='gray')
-            # ax.axis('off')
-            # fig.savefig('/data/jjia/ssc_scoring/image_samples/img_wt_retp_gg_' + str(self.counter) + '.png')
+                gg = copy.deepcopy(img_wt_retp)
+                # gg = rand_gg_mask * img_wt_retp
+                if save_img:
+                    fig, ax = plt.subplots()
+                    ax.imshow(gg, cmap='gray')
+                    ax.axis('off')
+                    fig.savefig('/data/jjia/ssc_scoring/image_samples/16_gg_candidate_' + str(self.counter) + '.png')
+
+                    # fig, ax = plt.subplots()
+                    # ax.imshow(gg_exclude_retp_, cmap='gray')
+                    # ax.axis('off')
+                    # fig.savefig('/data/jjia/ssc_scoring/image_samples/gg_exclude_retp_' + str(self.counter) + '.png')
+
+                # gg = self.add_noise(gg)  # before blur, apply noise to increase the average HU value
+                lighter_gg = copy.deepcopy(gg)
+                lighter_gg += args.gg_increase
+                gg = rand_gg_mask * lighter_gg + (1 - rand_gg_mask) * gg
+
+                if save_img:
+                    fig, ax = plt.subplots()
+                    ax.imshow(gg, cmap='gray')
+                    ax.axis('off')
+                    fig.savefig('/data/jjia/ssc_scoring/image_samples/17_gg_lighter_' + str(self.counter) + '.png')
+
+                gg_blur = 3
+                gg = cv2.blur(gg, (gg_blur, gg_blur))
+                if save_img:
+                    fig, ax = plt.subplots()
+                    ax.imshow(gg, cmap='gray')
+                    ax.axis('off')
+                    fig.savefig('/data/jjia/ssc_scoring/image_samples/18_gg_lighter_blur_' + str(self.counter) + '.png')
+
+                gg = rand_gg_mask * gg
+                if save_img:
+                    fig, ax = plt.subplots()
+                    ax.imshow(gg, cmap='gray')
+                    ax.axis('off')
+                    fig.savefig('/data/jjia/ssc_scoring/image_samples/19_gg_lighter_blur_smoothed_' + str(self.counter) + '.png')
+
+                img_exclude_gg_mask = (1 - rand_gg_mask) * img_wt_retp
+                img_wt_retp_gg = img_exclude_gg_mask + gg
+                if save_img:
+                    fig, ax = plt.subplots()
+                    ax.imshow(img_wt_retp_gg, cmap='gray')
+                    ax.axis('off')
+                    fig.savefig('/data/jjia/ssc_scoring/image_samples/20_img_wt_retp_gg_' + str(self.counter) + '.png')
 
             return torch.from_numpy(img_wt_retp_gg.astype(np.float32)), torch.tensor(y.astype(np.float32))
         else:
@@ -1305,7 +1411,8 @@ def ssc_transformd(mode='train', synthesis=False):
         if synthesis:
             xforms.append(SysthesisNewSampled(keys=keys,
                                               retp_fpath="/data/jjia/ssc_scoring/dataset/special_samples/retp.mha",
-                                              sys_pro=args.sys_pro, mode=mode))
+                                              gg_fpath="/data/jjia/ssc_scoring/dataset/special_samples/gg.mha",
+                                              mode=mode))
         xforms.extend([
             AddChanneld(keys),
             RandomAffined(keys=keys, degrees=rotation, translate=(shift, shift), scale=(1 - scale, 1 + scale)),
@@ -1726,7 +1833,7 @@ def get_mae_best(fpath):
     return mae
 
 
-def sampler_by_disext(tr_y):
+def sampler_by_disext(tr_y, sys_ratio=0.8):
     disext_list = []
     for sample in tr_y:
         if type(sample) in [list, np.ndarray]:
@@ -1735,15 +1842,36 @@ def sampler_by_disext(tr_y):
             disext_list.append(sample)
     disext_np = np.array(disext_list)
     disext_unique = np.unique(disext_np)
-    class_sample_count = np.array([len(np.where(disext_np == t)[0]) for t in disext_unique])
-    weight = 1. / class_sample_count
     disext_unique_list = list(disext_unique)
+
+    class_sample_count = np.array([len(np.where(disext_np == t)[0]) for t in disext_unique])
+    if sys_ratio:
+        weight = 1 / class_sample_count
+        print("class_sample_count", class_sample_count)
+        print("unique_disext",disext_unique_list )
+        print("original weight",weight )
+
+        idx_0 = disext_unique_list.index(0)
+        args._ori_weight0 = weight[idx_0]
+        weight[idx_0] += 20 *  weight[idx_0]
+        # samples_weight = np.array([weight[disext_unique_list.index(t)] for t in disext_np])
+
+        # weight_0 = sys_ratio + (1-sys_ratio)/21  # weight for category of 0, which is for original 0 and sys 0
+        # weight_others = 1 - weight_0  # weight for other categories
+        # # weight = [weight_0, *weight_others]
+        # samples_weight = np.array([weight_0 if t==0 else weight_others for t in disext_np])
+        print("weight: ", weight)
+        # print(samples_weight)
+    else:
+        weight = 1. / class_sample_count
+
     samples_weight = np.array([weight[disext_unique_list.index(t)] for t in disext_np])
 
     # weight = [nb_nonzero/len(data_y_list) if e[0] == 0 else nb_zero/len(data_y_list) for e in data_y_list]
     samples_weight = samples_weight.astype(np.float32)
     samples_weight = torch.from_numpy(samples_weight)
     sampler = WeightedRandomSampler(samples_weight, len(samples_weight))
+    print(list(sampler))
     return sampler
 
 
@@ -1794,19 +1922,19 @@ def train(id_: int):
         vd_data_aug = ReconDatasetd(vd_x[:10], transform=recon_transformd('train'))
         sampler = None
     else:
-                tr_x, tr_y, vd_x, vd_y, ts_x, ts_y = prepare_data(mypath)
-                # tr_x, tr_y, vd_x, vd_y, ts_x, ts_y = tr_x[:100], tr_y[:100], vd_x[:100], vd_y[:100], ts_x[:100], ts_y[:100]
-                tr_dataset = SysDataset(tr_x, tr_y, transform=ssc_transformd("train", synthesis=args.sys), synthesis=args.sys)
-                vd_data_aug = SysDataset(vd_x, vd_y, transform=ssc_transformd("validaug", synthesis=args.sys), synthesis=args.sys)
-                vd_dataset = SysDataset(vd_x, vd_y, transform=ssc_transformd("valid", synthesis=False), synthesis=False)
-                ts_dataset = SysDataset(ts_x, ts_y, transform=ssc_transformd("test", synthesis=False), synthesis=False)  # valid original data
-                sampler = sampler_by_disext(tr_y) if args.sampler else None
-                print(f'sampler is {sampler}')
+        tr_x, tr_y, vd_x, vd_y, ts_x, ts_y = prepare_data(mypath)
+        # tr_x, tr_y, vd_x, vd_y, ts_x, ts_y = tr_x[:100], tr_y[:100], vd_x[:100], vd_y[:100], ts_x[:100], ts_y[:100]
+        tr_dataset = SysDataset(tr_x, tr_y, transform=ssc_transformd("train", synthesis=args.sys), synthesis=args.sys)
+        vd_data_aug = SysDataset(vd_x, vd_y, transform=ssc_transformd("validaug", synthesis=args.sys), synthesis=args.sys)
+        vd_dataset = SysDataset(vd_x, vd_y, transform=ssc_transformd("valid", synthesis=False), synthesis=False)
+        ts_dataset = SysDataset(ts_x, ts_y, transform=ssc_transformd("test", synthesis=False), synthesis=False)  # valid original data
+        sampler = sampler_by_disext(tr_y, args.sys_ratio) if args.sampler else None
+        print(f'sampler is {sampler}')
 
-                # else:
-                #     raise Exception("synthesis_data can not be set with sampler !")
+        # else:
+        #     raise Exception("synthesis_data can not be set with sampler !")
 
-    batch_size = 10
+    batch_size = 20
     log_dict['batch_size'] = batch_size
     tr_shuffle = True if sampler is None else False
     train_dataloader = DataLoader(tr_dataset, batch_size=batch_size, shuffle=tr_shuffle, num_workers=args.workers,

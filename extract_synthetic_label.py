@@ -2,7 +2,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 import os
-
+import copy
 
 def extract_label(file_fpath):
     score_disext, score_gg, score_retp = [], [], []
@@ -10,7 +10,7 @@ def extract_label(file_fpath):
 
     with open(file_fpath) as f:
         for row in f:
-            divid_flap = "after systhesis, label is  tensor"
+            divid_flap = "after systhesis, label is tensor"
             if divid_flap in row:
                 score = row.split(divid_flap)[-1]
                 score = score[2:-3]  # exclude [( and )]\n
@@ -21,7 +21,7 @@ def extract_label(file_fpath):
                     score_retp.append(int(float(score[2])))
                 except:
                     pass
-            divid_flap2 = "No need for systhesis, label is  tensor"
+            divid_flap2 = "No need for systhesis, label is tensor"
             if divid_flap2 in row:
                 score = row.split(divid_flap2)[-1]
                 score = score[2:-3]  # exclude [( and )]\n
@@ -33,16 +33,31 @@ def extract_label(file_fpath):
                 except:
                     pass
     fig = plt.figure(figsize=(20, 6))
+    # x = np.arange(0, 105, 5)
+    bar_dt = {label: key for label, key in zip(np.arange(0, 21) * 5, np.zeros((21,)).astype(np.int))}
+
     for idx, score in enumerate([score_disext, score_gg, score_retp]):
+        score = [s // 5 * 5 for s in score]
+        bar_dt_ = copy.deepcopy(bar_dt)
+        for s in score:
+            bar_dt_[s] += 1
         ax = fig.add_subplot(1, 3, idx+1)
-        ax.hist(score, bins=20)
+        ax.bar(np.arange(0, 21) * 5, np.array(list(bar_dt_.values())))
+        # ax.hist(score, bins=21)
     plt.title("syn")
     plt.show()
 
     fig = plt.figure(figsize=(20, 6))
     for idx, score in enumerate([score_disext_ori, score_gg_ori, score_retp_ori]):
         ax = fig.add_subplot(1, 3, idx + 1)
-        ax.hist(score, bins=20)
+        score = [s // 5 * 5 for s in score]
+        bar_dt_ = copy.deepcopy(bar_dt)
+        for s in score:
+            bar_dt_[s] += 1
+        ax = fig.add_subplot(1, 3, idx + 1)
+        ax.bar(np.arange(0, 21) * 5, np.array(list(bar_dt_.values())))
+
+        # ax.hist(score, bins=21)
     plt.title("ori")
     plt.show()
 
@@ -51,8 +66,16 @@ def extract_label(file_fpath):
     score_gg.extend(score_gg_ori)
     score_retp.extend(score_retp_ori)
     for idx, score in enumerate([score_disext,score_gg,score_retp]):
+        score = [s // 5 * 5 for s in score]
+
         ax = fig.add_subplot(1, 3, idx + 1)
-        ax.hist(score, bins=20)
+        bar_dt_ = copy.deepcopy(bar_dt)
+        for s in score:
+            bar_dt_[s] += 1
+        ax = fig.add_subplot(1, 3, idx + 1)
+        ax.bar(np.arange(0, 21) * 5, np.array(list(bar_dt_.values())))
+
+        # ax.hist(score, bins=21)
     plt.title("all")
     plt.show()
     print('finish')
@@ -60,5 +83,5 @@ def extract_label(file_fpath):
 
 
 if __name__ == '__main__':
-    path = "slurmlogs/slurm-95049_0.out"
+    path = "slurmlogs/slurm-95534_0.out"
     extract_label(file_fpath = path)

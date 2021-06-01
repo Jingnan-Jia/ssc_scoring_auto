@@ -4,7 +4,6 @@
 # @Email   : jiajingnan2222@gmail.com
 import copy
 import time
-from run import Path, prepare_data, get_transform
 
 import cv2
 import os
@@ -13,7 +12,7 @@ import torch
 import torchvision.transforms as transforms
 from torchvision import models
 import json
-from run import get_net, Path, prepare_data, SScScoreDataset, get_transform
+from run import get_net, Path, prepare_data, SysDataset, ssc_transformd
 from torch.utils.data import Dataset, DataLoader
 import jjnutils.util as load_itk
 
@@ -262,12 +261,12 @@ def normalize_255(map_1_po):
 #         cam_show_img(x, fmap, grads_val, mypath.id_dir, idx)
 
 if __name__ == '__main__':
-    id = 451
+    id = 1405
     mypath = Path(id)
 
-    tr_x, tr_y, vd_x, vd_y, ts_x, ts_y = prepare_data()
-    ts_dataset = SScScoreDataset(ts_x, ts_y, transform=get_transform())
-    test_dataloader = DataLoader(ts_dataset, batch_size=10, shuffle=False, num_workers=12)
+    tr_x, tr_y, vd_x, vd_y, ts_x, ts_y = prepare_data(mypath)
+    ts_dataset = SysDataset(vd_x, vd_y, transform=ssc_transformd())
+    test_dataloader = DataLoader(ts_dataset, batch_size=10, shuffle=False, num_workers=6)
     test_dataloader = iter(test_dataloader)
 
     net = get_net('vgg11_bn', 3)

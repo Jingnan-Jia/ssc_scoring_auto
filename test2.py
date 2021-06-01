@@ -11,7 +11,7 @@ import cProfile
 #
 # label_1 = "/data/jjia/ssc_scoring/ground_truth_17_patients.csv"
 
-pred_1 = "/data/jjia/ssc_scoring/1068_16pats_pred.csv"
+pred_1 = "/data/jjia/ssc_scoring/1405_16pats_pred.csv"
 #
 label_1 = "/data/jjia/ssc_scoring/observer_agreement/16_patients/ground_truth_16patients.csv"
 
