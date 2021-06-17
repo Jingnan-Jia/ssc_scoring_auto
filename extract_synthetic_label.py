@@ -83,5 +83,5 @@ def extract_label(file_fpath):
 
 
 if __name__ == '__main__':
-    path = "slurmlogs/slurm-95534_0.out"
+    path = "slurmlogs/slurm-96342_0.out"
     extract_label(file_fpath = path)

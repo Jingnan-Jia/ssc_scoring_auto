@@ -12,7 +12,7 @@ import threading
 import time
 from typing import (Dict, List, Tuple, Hashable,
                     Optional, Sequence, Union, Mapping)
-
+from tqdm import tqdm
 import monai
 import numpy as np
 import nvidia_smi
@@ -144,17 +144,17 @@ class Cnn5fc2(nn.Module):
             nn.ReLU(inplace=True),
             nn.BatchNorm3d(base),
             nn.MaxPool3d(kernel_size=3, stride=2),
-            
+
             nn.Conv3d(base, base * 2, 3, padding=1),
             nn.ReLU(inplace=True),
             nn.BatchNorm3d(base * 2),
             nn.MaxPool3d(kernel_size=3, stride=2),
-            
+
             nn.Conv3d(base * 2, base * 4, 3, padding=1),
             nn.ReLU(inplace=True),
             nn.BatchNorm3d(base * 4),
             nn.MaxPool3d(kernel_size=3, stride=2),
-            
+
             nn.Conv3d(base * 4, base * 8, 3, padding=1),
             nn.ReLU(inplace=True),
             nn.BatchNorm3d(base * 8),
@@ -242,42 +242,80 @@ class Cnn6fc2(nn.Module):
 class Vgg11_3d(nn.Module):
     def __init__(self, num_classes: int = 5, base: int = 8):
         super().__init__()
-        self.features = nn.Sequential(
-            nn.Conv3d(1, base, 3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.BatchNorm3d(base),
-            nn.MaxPool3d(kernel_size=3, stride=2),
+        if args.InsNorm:
+            self.features = nn.Sequential(
+                nn.Conv3d(1, base, 3, padding=1),
+                nn.ReLU(inplace=True),
+                nn.InstanceNorm3d(base),
+                nn.MaxPool3d(kernel_size=3, stride=2),
 
-            nn.Conv3d(base, base * 2, 3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.BatchNorm3d(base * 2),
-            nn.MaxPool3d(kernel_size=3, stride=2),
+                nn.Conv3d(base, base * 2, 3, padding=1),
+                nn.ReLU(inplace=True),
+                nn.InstanceNorm3d(base * 2),
+                nn.MaxPool3d(kernel_size=3, stride=2),
 
-            nn.Conv3d(base * 2, base * 4, 3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.BatchNorm3d(base * 4),
-            nn.Conv3d(base * 4, base * 4, 3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.BatchNorm3d(base * 4),
-            nn.MaxPool3d(kernel_size=3, stride=2),
+                nn.Conv3d(base * 2, base * 4, 3, padding=1),
+                nn.ReLU(inplace=True),
+                nn.InstanceNorm3d(base * 4),
+                nn.Conv3d(base * 4, base * 4, 3, padding=1),
+                nn.ReLU(inplace=True),
+                nn.InstanceNorm3d(base * 4),
+                nn.MaxPool3d(kernel_size=3, stride=2),
 
-            nn.Conv3d(base * 4, base * 8, 3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.BatchNorm3d(base * 8),
-            nn.Conv3d(base * 8, base * 8, 3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.BatchNorm3d(base * 8),
-            nn.MaxPool3d(kernel_size=3, stride=2),
+                nn.Conv3d(base * 4, base * 8, 3, padding=1),
+                nn.ReLU(inplace=True),
+                nn.InstanceNorm3d(base * 8),
+                nn.Conv3d(base * 8, base * 8, 3, padding=1),
+                nn.ReLU(inplace=True),
+                nn.InstanceNorm3d(base * 8),
+                nn.MaxPool3d(kernel_size=3, stride=2),
 
-            nn.Conv3d(base * 8, base * 16, 3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.BatchNorm3d(base * 16),
-            nn.Conv3d(base * 16, base * 16, 3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.BatchNorm3d(base * 16),
-            nn.MaxPool3d(kernel_size=3, stride=2),
+                nn.Conv3d(base * 8, base * 16, 3, padding=1),
+                nn.ReLU(inplace=True),
+                nn.InstanceNorm3d(base * 16),
+                nn.Conv3d(base * 16, base * 16, 3, padding=1),
+                nn.ReLU(inplace=True),
+                nn.InstanceNorm3d(base * 16),
+                nn.MaxPool3d(kernel_size=3, stride=2),
 
-        )
+            )
+        else:
+            self.features = nn.Sequential(
+                nn.Conv3d(1, base, 3, padding=1),
+                nn.ReLU(inplace=True),
+                nn.BatchNorm3d(base),
+                nn.MaxPool3d(kernel_size=3, stride=2),
+
+                nn.Conv3d(base, base * 2, 3, padding=1),
+                nn.ReLU(inplace=True),
+                nn.BatchNorm3d(base * 2),
+                nn.MaxPool3d(kernel_size=3, stride=2),
+
+                nn.Conv3d(base * 2, base * 4, 3, padding=1),
+                nn.ReLU(inplace=True),
+                nn.BatchNorm3d(base * 4),
+                nn.Conv3d(base * 4, base * 4, 3, padding=1),
+                nn.ReLU(inplace=True),
+                nn.BatchNorm3d(base * 4),
+                nn.MaxPool3d(kernel_size=3, stride=2),
+
+                nn.Conv3d(base * 4, base * 8, 3, padding=1),
+                nn.ReLU(inplace=True),
+                nn.BatchNorm3d(base * 8),
+                nn.Conv3d(base * 8, base * 8, 3, padding=1),
+                nn.ReLU(inplace=True),
+                nn.BatchNorm3d(base * 8),
+                nn.MaxPool3d(kernel_size=3, stride=2),
+
+                nn.Conv3d(base * 8, base * 16, 3, padding=1),
+                nn.ReLU(inplace=True),
+                nn.BatchNorm3d(base * 16),
+                nn.Conv3d(base * 16, base * 16, 3, padding=1),
+                nn.ReLU(inplace=True),
+                nn.BatchNorm3d(base * 16),
+                nn.MaxPool3d(kernel_size=3, stride=2),
+
+            )
         self.avgpool = nn.AdaptiveAvgPool3d((6, 6, 6))
         self.classifier = nn.Sequential(
             nn.Dropout(),
@@ -311,7 +349,7 @@ def get_net_pos(name: str, nb_cls: int):
         net = Cnn6fc2(num_classes=5)
     elif name == "vgg11_3d":
         net = Vgg11_3d(num_classes=5)
-    elif name=="r3d_resnet":
+    elif name == "r3d_resnet":
         if args.pretrained:  # inplane=64
             net = models.video.r3d_18(pretrained=True, progress=True)
             net.stem[0] = nn.Conv3d(1, 64, kernel_size=(3, 7, 7), stride=(1, 2, 2),
@@ -347,7 +385,7 @@ def get_net_pos(name: str, nb_cls: int):
     return net
 
 
-def load_data_of_pats(dir_pats: Union[List, np.ndarray], label_file: str):
+def load_data_of_pats(dir_pats: Union[List, np.ndarray], label_file: str) -> list:
     df_excel = pd.read_excel(label_file, engine='openpyxl')
     df_excel = df_excel.set_index('PatID')
     x, y = [], []
@@ -368,21 +406,22 @@ def load_data_5labels(dir_pat: str, df_excel: pd.DataFrame) -> Tuple[str, np.nda
     return data_name, np.array(data_label)
 
 
-class SScScoreDataset(Dataset):
+class DatasetPos(Dataset):
     """SSc scoring dataset."""
 
-    def __init__(self, data_x_names: Sequence, world_list: Sequence, index: Sequence = None, transform=None):
+    def __init__(self, x_fpaths: Sequence, world_list: Sequence, index: Sequence = None, xform=None):
 
-        self.data_x_names, self.world_list = np.array(data_x_names), np.array(world_list)
+        self.data_x_names, self.world_list = np.array(x_fpaths), np.array(world_list)
 
         if index is not None:
             self.data_x_names = self.data_x_names[index]
             self.world_list = self.world_list[index]
         print('loading data ...')
-        self.data_x = [futil.load_itk(x, require_ori_sp=True) for x in self.data_x_names]
+        self.data_x = [futil.load_itk(x, require_ori_sp=True) for x in tqdm(self.data_x_names)]
         self.data_x_np = [i[0] for i in self.data_x]  # shape order: z, y, x
         normalize0to1 = ScaleIntensityRange(a_min=-1500.0, a_max=1500.0, b_min=0.0, b_max=1.0, clip=True)
-        self.data_x_np = [normalize0to1(x_np) for x_np in self.data_x_np]
+        print("normalizing ... ")
+        self.data_x_np = [normalize0to1(x_np) for x_np in tqdm(self.data_x_np)]
         # scale data to 0~1, it's convinent for future transform during dataloader
         self.data_x_or_sp = [[i[1], i[2]] for i in self.data_x]
         self.ori = np.array([i[1] for i in self.data_x])  # shape order: z, y, x
@@ -410,9 +449,6 @@ class SScScoreDataset(Dataset):
         self.data_x_np = [x.astype(np.float32) for x in self.data_x_np]
         self.data_y_np = [y.astype(np.float32) for y in self.y]
 
-
-
-
         # randomcrop = RandomCropPos()
         # image_, label_ = [], []
         # for image, label in zip(self.data_x_np, self.data_y_np):
@@ -426,7 +462,7 @@ class SScScoreDataset(Dataset):
         #     image, label = noise(image, label)
         #
 
-        self.transform = transform
+        self.transform = xform
 
     def __len__(self):
         return len(self.data_y_np)
@@ -595,6 +631,7 @@ class RandomCropPosd:
         d = shiftd(d, start, self.z_size, self.y_size, self.x_size)
         return d
 
+
 # class CropLevelRegiond:
 #     def __init__(self, level):
 #         self.level = level
@@ -646,12 +683,7 @@ class ComposePosd:
         return format_string
 
 
-def get_transformd(mode=None, level=None):
-    """
-    The input image data is from 0 to 1.
-    :param mode:
-    :return:
-    """
+def get_xformd(mode=None, level=None):
     xforms = []
     if level:
         xforms.append(CropLevelRegiond(level))
@@ -716,7 +748,7 @@ def split_dir_pats(data_dir, label_file, ts_id):
     data_dir = abs_dir_path + "/" + data_dir
 
     dir_pats = sorted(glob.glob(os.path.join(data_dir, "Pat_*CTimage.mha")))
-    if len(dir_pats)==0:  # does not find patients in this directory
+    if len(dir_pats) == 0:  # does not find patients in this directory
         dir_pats = sorted(glob.glob(os.path.join(data_dir, "Pat_*CTimage_low.mha")))
         if len(dir_pats) == 0:
             dir_pats = sorted(glob.glob(os.path.join(data_dir, "Pat_*", "CTimage.mha")))
@@ -865,12 +897,11 @@ def get_column(n, tr_y):
     return column
 
 
-def save_xy(xs, ys, mode, mypath):  # todo: check typing
+def save_xy(xs: list, ys: list, mode: str, mypath: Path):
     with open(mypath.data(mode), 'a') as f:
         writer = csv.writer(f)
         for x, y in zip(xs, ys):
             writer.writerow([x, y])
-
 
 
 class MSEHigher(nn.Module):
@@ -935,35 +966,31 @@ def sampler_by_disext(tr_y):
 
 
 def get_loss(args):
-    if args.r_c == "c":
-        loss_fun = nn.CrossEntropyLoss()  # for classification task
-        log_dict['loss_fun'] = 'CE'
+    if args.loss == 'mae':
+        loss_fun = nn.L1Loss()
+    elif args.loss == 'smooth_mae':
+        loss_fun = nn.SmoothL1Loss()
+    elif args.loss == 'mse':
+        loss_fun = nn.MSELoss()
+    elif args.loss == 'mse+mae':
+        loss_fun = nn.MSELoss() + nn.L1Loss()  # for regression task
+    elif args.loss == 'msehigher':
+        loss_fun = MSEHigher()
     else:
-        if args.loss == 'mae':
-            loss_fun = nn.L1Loss()
-        elif args.loss == 'smooth_mae':
-            loss_fun = nn.SmoothL1Loss()
-        elif args.loss == 'mse':
-            loss_fun = nn.MSELoss()
-        elif args.loss == 'mse+mae':
-            loss_fun = nn.MSELoss() + nn.L1Loss()  # for regression task
-        elif args.loss == 'msehigher':
-            loss_fun = MSEHigher()
-        else:
-            raise Exception("loss function is not correct ", args.loss)
+        raise Exception("loss function is not correct ", args.loss)
     return loss_fun
 
 
-def prepare_data(mypath, data_dir, label_file, kfold_seed=49, ts_level_nb=240, fold=1, total_folds =4):
+def prepare_data(mypath, data_dir, label_file, kfold_seed=49, fold=1, total_folds=4):
     # get data_x names
-    kf5 = KFold(n_splits=total_folds, shuffle=True, random_state=kfold_seed)  # for future reproduction
+    kf = KFold(n_splits=total_folds, shuffle=True, random_state=kfold_seed)  # for future reproduction
 
-    if ts_level_nb == 240:
+    if args.ts_level_nb == 240:
         ts_id = [68, 83, 36, 187, 238, 12, 158, 189, 230, 11, 35, 37, 137, 144, 17, 42, 66, 70, 28, 64, 210, 3, 49, 32,
                  236, 206, 194, 196, 7, 9, 16, 19, 20, 21, 40, 46, 47, 57, 58, 59, 60, 62, 116, 117, 118, 128, 134, 216]
         tr_vd_pt, ts_pt = split_dir_pats(data_dir, label_file, ts_id)
 
-        kf_list = list(kf5.split(tr_vd_pt))
+        kf_list = list(kf.split(tr_vd_pt))
         tr_pt_idx, vd_pt_idx = kf_list[fold - 1]
         tr_pt = tr_vd_pt[tr_pt_idx]
         vd_pt = tr_vd_pt[vd_pt_idx]
@@ -980,66 +1007,95 @@ def prepare_data(mypath, data_dir, label_file, kfold_seed=49, ts_level_nb=240, f
     return tr_x, tr_y, vd_x, vd_y, ts_x, ts_y
 
 
-def train(id: int):
-    mypath = Path(id)
-
-    net = get_net_pos(args.net, 5)
-
-    if args.fine_level:
+def dataset_dir(resample_z: int) -> str:
+    if resample_z == 0:  # use original images
         data_dir: str = "dataset/SSc_DeepLearning"
-    elif args.resample_z == 256:
+    elif resample_z == 256:
         data_dir: str = "dataset/LowResolution_fix_size"
-    elif args.resample_z == 512:
+    elif resample_z == 512:
         data_dir: str = "dataset/LowRes512_192_192"
-    elif args.resample_z == 800:
+    elif resample_z == 800:
         data_dir: str = "dataset/LowRes800_160_160"
-    elif args.resample_z == 1024:
+    elif resample_z == 1024:
         data_dir: str = "dataset/LowRes1024_256_256"
     else:
         raise Exception("wrong resample_z:" + str(args.resample_z))
+    return data_dir
 
-    label_file: str = "dataset/SSc_DeepLearning/GohScores.xlsx"
-    kfold_seed: int = 49
 
+def eval_net_mae(eval_id: int, net: torch.nn.Module, mypath: Path):
+    mypath2 = Path(eval_id)
+    shutil.copy(mypath2.model_fpath, mypath.model_fpath)  # make sure there is at least one model there
+    for mo in ['train', 'validaug', 'valid', 'test']:
+        try:
+            shutil.copy(mypath2.loss(mo), mypath.loss(mo))  # make sure there is at least one model
+        except FileNotFoundError:
+            pass
+
+    net.load_state_dict(torch.load(mypath.model_fpath, map_location=device))
+    valid_mae_best = get_mae_best(mypath2.loss('valid'))
+    print(f'load model from {mypath2.model_fpath}, valid_mae_best is {valid_mae_best}')
+    return net, valid_mae_best
+
+
+def all_loader(mypath, data_dir, label_file, kfold_seed=49):
     log_dict['data_dir'] = data_dir
     log_dict['label_file'] = label_file
     log_dict['data_shuffle_seed'] = kfold_seed
 
-    tr_x, tr_y, vd_x, vd_y, ts_x, ts_y = prepare_data(mypath, data_dir, label_file, kfold_seed=49, ts_level_nb=240, fold=args.fold, total_folds = args.total_folds)
+    tr_x, tr_y, vd_x, vd_y, ts_x, ts_y = prepare_data(mypath, data_dir, label_file, kfold_seed=kfold_seed,
+                                                      fold=args.fold, total_folds=args.total_folds)
+    tr_x, tr_y, vd_x, vd_y, ts_x, ts_y = tr_x[:10], tr_y[:10], vd_x[:10], vd_y[:10], ts_x[:10], ts_y[:10]
     log_dict['tr_pat_nb'] = len(tr_x)
     log_dict['vd_pat_nb'] = len(vd_x)
     log_dict['ts_pat_nb'] = len(ts_x)
 
-    tr_dataset = SScScoreDataset(data_x_names=tr_x, world_list=tr_y, transform=get_transformd('train',
-                                                                                              level=args.fine_level))
-    vdaug_dataset = SScScoreDataset(data_x_names=vd_x, world_list=vd_y, transform=get_transformd('train',
-                                                                                                 level=args.fine_level)) # have comparible learning curve
-    vd_dataset = SScScoreDataset(data_x_names=vd_x, world_list=vd_y, transform=get_transformd('valid',
-                                                                                              level=args.fine_level))
-    ts_dataset = SScScoreDataset(data_x_names=ts_x, world_list=ts_y, transform=get_transformd('test',
-                                                                                              level=args.fine_level))
-    workers = 5
-    log_dict['loader_workers'] = workers
-    train_dataloader = DataLoader(tr_dataset, batch_size=args.batch_size, shuffle=True, num_workers=workers)
-    valid_dataloader = DataLoader(vd_dataset, batch_size=args.batch_size, shuffle=False, num_workers=workers)
-    validaug_dataloader = DataLoader(vdaug_dataset, batch_size=args.batch_size, shuffle=False, num_workers=workers)
-    # valid_dataloader = train_dataloader
-    test_dataloader = DataLoader(ts_dataset, batch_size=args.batch_size, shuffle=False, num_workers=workers)
+    tr_dataset = DatasetPos(x_fpaths=tr_x, world_list=tr_y, xform=get_xformd('train', level=args.fine_level))
+    # have compatible learning curve
+    vdaug_dataset = DatasetPos(x_fpaths=vd_x, world_list=vd_y, xform=get_xformd('train', level=args.fine_level))
+    vd_dataset = DatasetPos(x_fpaths=vd_x, world_list=vd_y, xform=get_xformd('valid', level=args.fine_level))
+    ts_dataset = DatasetPos(x_fpaths=ts_x, world_list=ts_y, xform=get_xformd('test', level=args.fine_level))
+
+    train_dataloader = DataLoader(tr_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.workers)
+    validaug_dataloader = DataLoader(vdaug_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.workers)
+    valid_dataloader = DataLoader(vd_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.workers)
+    test_dataloader = DataLoader(ts_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.workers)
+    return train_dataloader, validaug_dataloader, valid_dataloader, test_dataloader
+
+
+def compute_metrics(mypath: Path):
+    for mode in ['train', 'valid', 'test', 'validaug']:
+        try:
+            if args.eval_id:
+                mypath2 = Path(args.eval_id)
+                shutil.copy(mypath2.data(mode), mypath.data(mode))  # make sure there is at least one modedel there
+                shutil.copy(mypath2.loss(mode), mypath.loss(mode))  # make sure there is at least one modedel there
+                shutil.copy(mypath2.world(mode), mypath.world(mode))  # make sure there is at least one modedel there
+                shutil.copy(mypath2.pred(mode), mypath.pred(mode))  # make sure there is at least one modedel there
+                shutil.copy(mypath2.pred_int(mode),
+                            mypath.pred_int(mode))  # make sure there is at least one modedel there
+                shutil.copy(mypath2.pred_world(mode),
+                            mypath.pred_world(mode))  # make sure there is at least one modedel there
+
+            out_dt = confusion.confusion(mypath.world(mode), mypath.pred_world(mode), label_nb=args.z_size, space=1)
+            log_dict.update(out_dt)
+
+            icc_ = futil.icc(mypath.world(mode), mypath.pred_world(mode))
+            log_dict.update(icc_)
+        except FileNotFoundError:
+            continue
+
+
+def train(id: int):
+    mypath = Path(id)
+    net: torch.nn.Module = get_net_pos(args.net, 5)
+    data_dir = dataset_dir(args.resample_z)
+    label_file = "dataset/SSc_DeepLearning/GohScores.xlsx"
+    train_dataloader, validaug_dataloader, valid_dataloader, test_dataloader = all_loader(mypath, data_dir, label_file)
 
     net = net.to(device)
     if args.eval_id:
-        mypath2 = Path(args.eval_id)
-        shutil.copy(mypath2.model_fpath, mypath.model_fpath)  # make sure there is at least one model there
-        for mo in ['train', 'valid', 'test']:
-            shutil.copy(mypath2.loss(mo), mypath.loss(mo))  # make sure there is at least one model there
-        try:
-            shutil.copy(mypath2.loss('validaug'), mypath.loss('validaug'))
-        except:
-            pass
-
-        net.load_state_dict(torch.load(mypath.model_fpath, map_location=device))
-        valid_mae_best = get_mae_best(mypath2.loss('valid'))
-        print(f'load model from {mypath2.model_fpath}, valid_mae_best is {valid_mae_best}')
+        net, valid_mae_best = eval_net_mae(args.eval_id, net, mypath)
     else:
         valid_mae_best = 10000
 
@@ -1048,7 +1104,6 @@ def train(id: int):
     lr = 1e-4
     log_dict['lr'] = lr
     opt = torch.optim.Adam(net.parameters(), lr=lr, weight_decay=args.weight_decay)
-
     scaler = torch.cuda.amp.GradScaler() if amp else None
     epochs = 0 if args.mode == 'infer' else args.epochs
     for i in range(epochs):  # 20000 epochs
@@ -1062,28 +1117,9 @@ def train(id: int):
         start_run('test', net, test_dataloader, epochs, loss_fun, loss_fun_mae, opt, scaler, mypath, i)
 
     dataloader_dict = {'train': train_dataloader, 'valid': valid_dataloader,
-                       'test': test_dataloader, 'validaug':validaug_dataloader}
+                       'test': test_dataloader, 'validaug': validaug_dataloader}
     record_best_preds(net, dataloader_dict, mypath)
-
-    for mode in ['train', 'valid', 'test', 'validaug']:
-        try:
-            if args.eval_id:
-                mypath2 = Path(args.eval_id)
-                shutil.copy(mypath2.data(mode), mypath.data(mode))  # make sure there is at least one modedel there
-                shutil.copy(mypath2.loss(mode), mypath.loss(mode))  # make sure there is at least one modedel there
-                shutil.copy(mypath2.world(mode), mypath.world(mode))  # make sure there is at least one modedel there
-                shutil.copy(mypath2.pred(mode), mypath.pred(mode))  # make sure there is at least one modedel there
-                shutil.copy(mypath2.pred_int(mode), mypath.pred_int(mode))  # make sure there is at least one modedel there
-                shutil.copy(mypath2.pred_world(mode),
-                            mypath.pred_world(mode))  # make sure there is at least one modedel there
-
-            out_dt = confusion.confusion(mypath.world(mode), mypath.pred_world(mode), label_nb=args.z_size, space=1)
-            log_dict.update(out_dt)
-
-            icc_ = futil.icc(mypath.world(mode), mypath.pred_world(mode))
-            log_dict.update(icc_)
-        except:
-            pass
+    compute_metrics(mypath)
 
 
 def SlidingLoader(fpath, label, z_size, stride=1, batch_size=1):
@@ -1163,10 +1199,11 @@ class Evaluater():
                     pred = pred.cpu().detach().numpy()
                     pred_in_patch = pred
                     pred_in_patch_ls.append(pred_in_patch)
-                    pred = pred_in_patch + start.numpy().reshape((-1, 1))  # re organize it to original coordinate
+                    start_np = start.numpy().reshape((-1, 1))
+                    pred = pred_in_patch + start_np  # re organize it to original coordinate
                     pred_ls.append(pred)
-
-                    label_in_patch_ls.append(new_label)
+                    new_label_ = new_label + start_np
+                    label_in_patch_ls.append(new_label_)
 
                 pred_all = np.concatenate(pred_ls, axis=0)
                 pred_in_patch_all = np.concatenate(pred_in_patch_ls, axis=0)
@@ -1183,15 +1220,18 @@ class Evaluater():
                 batch_world: np.ndarray = batch_data['world_key'][idx].cpu().detach().numpy()
                 head = ['L1', 'L2', 'L3', 'L4', 'L5']
                 if idx < 5:
-                    futil.appendrows_to(self.mypath.pred(self.mode).split('.csv')[0] + '_' + str(idx) + '.csv', pred_all, head=head)
-                    futil.appendrows_to(self.mypath.pred(self.mode).split('.csv')[0] + '_' + str(idx) + '_in_patch.csv', pred_in_patch_all, head=head)
-                    futil.appendrows_to(self.mypath.label(self.mode).split('.csv')[0] + '_' + str(idx) + '_in_patch.csv', label_in_patch_all, head=head)
-
+                    futil.appendrows_to(self.mypath.pred(self.mode).split('.csv')[0] + '_' + str(idx) + '.csv',
+                                        pred_all, head=head)
+                    futil.appendrows_to(self.mypath.pred(self.mode).split('.csv')[0] + '_' + str(idx) + '_in_patch.csv',
+                                        pred_in_patch_all, head=head)
+                    futil.appendrows_to(
+                        self.mypath.label(self.mode).split('.csv')[0] + '_' + str(idx) + '_in_patch.csv',
+                        label_in_patch_all, head=head)
 
                     pred_all_world = pred_all * batch_data['space_key'][idx][0].item() + \
-                                                batch_data['origin_key'][idx][0].item()
-                    futil.appendrows_to(self.mypath.pred(self.mode).split('.csv')[0] + '_' + str(idx) + '_world.csv', pred_all_world, head=head)
-
+                                     batch_data['origin_key'][idx][0].item()
+                    futil.appendrows_to(self.mypath.pred(self.mode).split('.csv')[0] + '_' + str(idx) + '_world.csv',
+                                        pred_all_world, head=head)
 
                 futil.appendrows_to(self.mypath.label(self.mode), batch_label, head=head)
                 futil.appendrows_to(self.mypath.pred(self.mode), batch_preds_ave, head=head)
@@ -1200,7 +1240,7 @@ class Evaluater():
                 futil.appendrows_to(self.mypath.world(self.mode), batch_world, head=head)
 
 
-def record_best_preds(net, dataloader_dict, mypath):
+def record_best_preds(net: torch.nn.Module, dataloader_dict: Dict[str, DataLoader], mypath: Path):
     net.load_state_dict(torch.load(mypath.model_fpath, map_location=device))  # load the best weights to do evaluation
     net.eval()
     for mode, dataloader in dataloader_dict.items():
@@ -1241,116 +1281,136 @@ def fill_running(df: pd.DataFrame):
 
 def correct_type(df: pd.DataFrame):
     for column in df:
-        ori_type = type(df[column].to_list()[-1])
+        ori_type = type(df[column].to_list()[-1])  # find the type of the last valuable in this column
         if ori_type is int:
             df[column] = df[column].astype('Int64')  # correct type
     return df
 
 
+def get_df_id(record_file: str):
+    if not os.path.isfile(record_file) or os.stat(record_file).st_size == 0:  # empty?
+        new_id = 1
+        df = pd.DataFrame()
+    else:
+        df = pd.read_csv(record_file)  # read the record file,
+        last_id = df['ID'].to_list()[-1]  # find the last ID
+        new_id = int(last_id) + 1
+    return df, new_id
+
+
+def record_1st(record_file, current_id):
+    lock = FileLock(record_file + ".lock")  # lock the file, avoid other processes write other things
+    with lock:  # with this lock,  open a file for exclusive access
+        with open(record_file, 'a') as csv_file:
+            df, new_id = get_df_id(record_file)
+            mypath = Path(new_id, check_id_dir=True)  # to check if id_dir already exist
+
+            start_date = datetime.date.today().strftime("%Y-%m-%d")
+            start_time = datetime.datetime.now().time().strftime("%H:%M:%S")
+            # start record by id, date,time row = [new_id, date, time, ]
+            idatime = {'ID': new_id, 'start_date': start_date, 'start_time': start_time}
+            args_dict = vars(args)
+            idatime.update(args_dict)  # followed by super parameters
+            if len(df) == 0:  # empty file
+                df = pd.DataFrame([idatime])  # need a [] , or need to assign the index for df
+            else:
+                index = df.index.to_list()[-1]  # last index
+                for key, value in idatime.items():  # write new line
+                    df.at[index + 1, key] = value  #
+
+            df = fill_running(df)  # fill the state information for other experiments
+            df = correct_type(df)  # aviod annoying thing like: ID=1.00
+            write_and_backup(df, record_file, mypath)
+    return new_id
+
+
+def add_best_metrics(df: pd.DataFrame, mypath: Path, index: int) -> pd.DataFrame:
+    for mode in ['train', 'validaug', 'valid', 'test']:
+        lock2 = FileLock(mypath.loss(mode) + ".lock")
+        # when evaluating/inference old models, those files would be copied to new the folder
+        with lock2:
+            try:
+                loss_df = pd.read_csv(mypath.loss(mode))
+            except FileNotFoundError:  # copy loss files from old directory to here
+                mypath2 = Path(args.eval_id)
+                shutil.copy(mypath2.loss(mode), mypath.loss(mode))
+                try:
+                    loss_df = pd.read_csv(mypath.loss(mode))
+                except FileNotFoundError:  # still cannot find the loss file in old directory, pass this mode
+                    continue
+
+            best_index = loss_df['mae'].idxmin()
+            log_dict['metrics_min'] = 'mae'
+            loss = loss_df['loss'][best_index]
+            mae = loss_df['mae'][best_index]
+        df.at[index, mode + '_loss'] = round(loss, 2)
+        df.at[index, mode + '_mae'] = round(mae, 2)
+    return df
+
+
+def write_and_backup(df: pd.DataFrame, record_file: str, mypath: Path):
+    df.to_csv(record_file, index=False)
+    shutil.copy(record_file, 'cp_' + record_file)
+    df_lastrow = df.iloc[[-1]]
+    df_lastrow.to_csv(mypath.id_dir + '/' + record_file, index=False)  # save the record of the current ex
+
+
+def record_2nd(record_file, current_id):
+    lock = FileLock(record_file + ".lock")
+    with lock:  # with this lock,  open a file for exclusive access
+        df = pd.read_csv(record_file)
+        index = df.index[df['ID'] == current_id].to_list()
+        if len(index) > 1:
+            raise Exception("over 1 row has the same id", id)
+        elif len(index) == 0:  # only one line,
+            index = 0
+        else:
+            index = index[0]
+
+        start_date = datetime.date.today().strftime("%Y-%m-%d")
+        start_time = datetime.datetime.now().time().strftime("%H:%M:%S")
+        df.at[index, 'end_date'] = start_date
+        df.at[index, 'end_time'] = start_time
+
+        # usage
+        f = "%Y-%m-%d %H:%M:%S"
+        t1 = datetime.datetime.strptime(df['start_date'][index] + ' ' + df['start_time'][index], f)
+        t2 = datetime.datetime.strptime(df['end_date'][index] + ' ' + df['end_time'][index], f)
+        elapsed_time = check_time_difference(t1, t2)
+        df.at[index, 'elapsed_time'] = elapsed_time
+
+        mypath = Path(current_id)  # evaluate old model
+        df = add_best_metrics(df, mypath, index)
+
+        for key, value in log_dict.items():  # convert numpy to str before writing all log_dict to csv file
+            if type(value) in [np.ndarray, list]:
+                str_v = ''
+                for v in value:
+                    str_v += str(v)
+                    str_v += '_'
+                value = str_v
+            df.loc[index, key] = value
+            if type(value) is int:
+                df[key] = df[key].astype('Int64')
+
+        for column in df:
+            if type(df[column].to_list()[-1]) is int:
+                df[column] = df[column].astype('Int64')  # correct type again, avoid None/1.00/NAN, etc.
+
+        args_dict = vars(args)
+        args_dict.update({'ID': current_id})
+        for column in df:
+            if column in args_dict.keys() and type(args_dict[column]) is int:
+                df[column] = df[column].astype(float).astype('Int64')  # correct str to float and then int
+        write_and_backup(df, record_file, mypath)
+
+
 def record_experiment(record_file: str, current_id: Optional[int] = None):
     if current_id is None:  # before the experiment
-        lock = FileLock(record_file + ".lock")
-        with lock:  # with this lock,  open a file for exclusive access
-            with open(record_file, 'a') as csv_file:
-                if not os.path.isfile(record_file) or os.stat(record_file).st_size == 0:  # empty?
-                    new_id = 1
-                    df = pd.DataFrame()
-                else:
-                    df = pd.read_csv(record_file)
-                    last_id = df['ID'].to_list()[-1]
-                    new_id = int(last_id) + 1
-                mypath = Path(new_id, check_id_dir=True)  # to check if id_dir already exist
-
-                date = datetime.date.today().strftime("%Y-%m-%d")
-                time = datetime.datetime.now().time().strftime("%H:%M:%S")
-                # row = [new_id, date, time, ]
-                idatime = {'ID': new_id, 'start_date': date, 'start_time': time}
-
-                args_dict = vars(args)
-                idatime.update(args_dict)
-                if len(df) == 0:
-                    df = pd.DataFrame([idatime])  # need a [] , or need to assign the index for df
-                else:
-                    index = df.index.to_list()[-1]
-                    for key, value in idatime.items():
-                        df.at[index + 1, key] = value  #
-
-                df = fill_running(df)
-                df = correct_type(df)
-
-                df.to_csv(record_file, index=False)
-                shutil.copy(record_file, 'cp_' + record_file)
-                df_lastrow = df.iloc[[-1]]
-                df_lastrow.to_csv(mypath.id_dir + '/' + record_file, index=False)  # save the record of the current ex
+        new_id = record_1st(record_file, current_id)
         return new_id
-    else:  # at the end of this experiments, find the line of this id, and record the final information
-        lock = FileLock(record_file + ".lock")
-        with lock:  # with this lock,  open a file for exclusive access
-            df = pd.read_csv(record_file)
-            index = df.index[df['ID'] == current_id].to_list()
-            if len(index) > 1:
-                raise Exception("over 1 row has the same id", id)
-            elif len(index) == 0:  # only one line,
-                index = 0
-            else:
-                index = index[0]
-
-            date = datetime.date.today().strftime("%Y-%m-%d")
-            time = datetime.datetime.now().time().strftime("%H:%M:%S")
-            df.at[index, 'end_date'] = date
-            df.at[index, 'end_time'] = time
-
-            # usage
-            f = "%Y-%m-%d %H:%M:%S"
-            t1 = datetime.datetime.strptime(df['start_date'][index] + ' ' + df['start_time'][index], f)
-            t2 = datetime.datetime.strptime(df['end_date'][index] + ' ' + df['end_time'][index], f)
-            elapsed_time = check_time_difference(t1, t2)
-            df.at[index, 'elapsed_time'] = elapsed_time
-
-            mypath = Path(current_id)  # evaluate old model
-            for mode in ['train', 'valid', 'test']:
-                lock2 = FileLock(mypath.loss(mode) + ".lock")
-                # when evaluating old mode3ls, those files would be copied to new the folder
-                with lock2:
-                    try:
-                        loss_df = pd.read_csv(mypath.loss(mode))
-                    except:
-                        mypath2 = Path(args.eval_id)
-                        shutil.copy(mypath2.loss(mode), mypath.loss(mode))
-                        loss_df = pd.read_csv(mypath.loss(mode))
-
-                    best_index = loss_df['mae'].idxmin()
-                    log_dict['metrics_min'] = 'mae'
-                    loss = loss_df['loss'][best_index]
-                    mae = loss_df['mae'][best_index]
-                df.at[index, mode + '_loss'] = round(loss, 2)
-                df.at[index, mode + '_mae'] = round(mae, 2)
-
-            for key, value in log_dict.items():  # write all log_dict to csv file
-                if type(value) is np.ndarray:
-                    str_v = ''
-                    for v in value:
-                        str_v += str(v)
-                        str_v += '_'
-                    value = str_v
-                df.loc[index, key] = value
-                if type(value) is int:
-                    df[key] = df[key].astype('Int64')
-
-            for column in df:
-                if type(df[column].to_list()[-1]) is int:
-                    df[column] = df[column].astype('Int64')  # correct type
-
-            args_dict = vars(args)
-            args_dict.update({'ID': current_id})
-            for column in df:
-                if column in args_dict.keys() and type(args_dict[column]) is int:
-                    df[column] = df[column].astype(float).astype('Int64')  # correct str to float and then int
-
-            df.to_csv(record_file, index=False)
-            shutil.copy(record_file, 'cp_' + record_file)
-            df_lastrow = df.iloc[[-1]]
-            df_lastrow.to_csv(mypath.id_dir + '/' + record_file, index=False)  # save the record of the current ex
+    else:  # at the end of this experiments, find the line of this id, and record the other information
+        record_2nd(record_file, current_id)
 
 
 def check_time_difference(t1: datetime, t2: datetime):
@@ -1362,12 +1422,11 @@ def check_time_difference(t1: datetime, t2: datetime):
 
 
 if __name__ == "__main__":
-
-
+    # set some global variables here, like log_dict, device, amp
     LogType = Optional[Union[int, float, str]]  # int includes bool
-    log_dict: Dict[str, LogType] = {}  # a global dict to store variables saved to log files
+    log_dict: Dict[str, LogType] = {}  # a global dict to store immutable variables saved to log files
 
-    if torch.cuda.is_available():
+    if torch.cuda.is_available():  # set device and amp
         device = torch.device("cuda")
         amp = True
     else:
@@ -1375,7 +1434,7 @@ if __name__ == "__main__":
         amp = False
     log_dict['amp'] = amp
 
-    record_file = 'records_pos.csv'
-    id = record_experiment(record_file)
+    record_file: str = 'records_pos.csv'
+    id: int = record_experiment(record_file)  # write super parameters from set_args.py to record file.
     train(id)
-    record_experiment(record_file, current_id=id)
+    record_experiment(record_file, current_id=id)  # write other parameters and metrics to record file.

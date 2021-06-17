@@ -790,18 +790,14 @@ class SysDataset(Dataset):
         if torch.is_tensor(idx):
             idx = idx.tolist()
 
-
         data = {'image_key': self.data_x_tensor[idx],
                 'label_key': self.data_y_tensor[idx],
                 'space_key': self.sp[idx],
                 'origin_key': self.ori[idx],
                 'fpath_key': self.data_x_names[idx]}
-
         if self.systhesis:
             new_dict = {'lung_mask_key': self.lung_masks[idx]}
             data.update(new_dict)
-
-
         if self.transform:
             data = self.transform(data)
         return data
@@ -852,6 +848,76 @@ class MyNormalized(MapTransform):
             d[key] = self.norm(d[key])
         return d
 
+def resort_pts_for_convex(pts_ls: list) -> list:
+    pts_ls = sorted(pts_ls, key=lambda x: x[0])  # sort list by the x position
+    new_pts_ls: list = [pts_ls[0]]  # decide the first point
+    del pts_ls[0]  # remove the first point from original list
+
+    # start from left to bottom
+    idx_ls_to_del = []
+    for idx, pos in enumerate(pts_ls):
+        if pos[1] <= new_pts_ls[-1][1]:  # new points need to be lower than
+            new_pts_ls.append(pos)
+            idx_ls_to_del.append(idx)
+
+    for offset, idx in enumerate(idx_ls_to_del):
+        del pts_ls[idx-offset]  # pts_ls has already remove an element for each iteration
+
+    # then start from right to bottom
+    try:
+        pts_ls = pts_ls[::-1]
+        new_pts_ls_r2l = [pts_ls[0]]
+        del pts_ls[0]
+    except IndexError:
+        new_pts_ls_r2l = []
+
+    idx_ls_to_del = []
+    for idx, pos in enumerate(pts_ls):
+        if pos[1] <= new_pts_ls_r2l[-1][1]:  # new points need to be lower than
+            new_pts_ls_r2l.append(pos)
+            idx_ls_to_del.append(idx)
+    for offset, idx in enumerate(idx_ls_to_del):
+        del pts_ls[idx-offset]  # pts_ls has already remove an element for each iteration
+
+    new_pts_ls_l2r = new_pts_ls_r2l[::-1]
+    new_pts_ls.extend(new_pts_ls_l2r)  # left to bottom, bottom to right
+    new_pts_ls.extend(pts_ls)  # right to left via top
+    return new_pts_ls
+
+
+
+
+
+
+def gen_pts(nb_points: int, limit: int, radius: int) -> np.ndarray:
+    pts_ls: list = []
+    for i in range(nb_points):
+        if i == 0:
+            pos = [random.randint(0, limit), random.randint(0, limit)]
+            pts_ls.append(pos)
+        else:
+            pos = [pts_ls[0][0] + random.randint(-radius, radius),
+                            pts_ls[0][1] + random.randint(-radius, radius)]
+
+            pts_ls.append(pos)
+    valuable_pts_ls = []
+    for po in pts_ls:
+        if po[0]<0:
+            po[0]=0
+        if po[0]> limit:
+            po[0] = limit
+        if po[1]<0:
+            po[1]=0
+        if po[1]> limit:
+            po[1] = limit
+        valuable_pts_ls.append(po)
+
+
+    pts_ls = resort_pts_for_convex(valuable_pts_ls)
+    pts: np.ndarray = np.array(pts_ls)
+    pts: np.ndarray = pts.reshape((-1, 1, 2)).astype(np.int32)
+
+    return pts
 
 class SysthesisNewSampled(MapTransform):
     def __init__(self, keys, retp_fpath,gg_fpath, mode):
@@ -862,7 +928,6 @@ class SysthesisNewSampled(MapTransform):
         self.center_crop = CenterCrop(self.image_size)
         
         self.sys_pro = args.sys_pro_in_0 if args.sys_pro_in_0 else 20/21
-
 
         self.mode = mode
         self.retp_fpath = retp_fpath  # retp will generated from its egg
@@ -968,30 +1033,50 @@ class SysthesisNewSampled(MapTransform):
         self.account_label(d['label_key'][0].item())
         return d
 
-    def random_mask(self, nb_ellipse):
-        fig_ = np.zeros((self.image_size, self.image_size))
-        startAngle = 0
-        endAngle = 360
+    def random_mask(self, nb_ellipse: int = 3, type: str ="ellipse"):
+        fig_: np.ndarray = np.zeros((self.image_size, self.image_size))
         # Blue color in BGR
         color = 1
         # Line thickness of -1 px
         thickness = -1
+        nb_shapes: int = random.randint(1, nb_ellipse)
 
-        # Using cv2.ellipse() method
-        # Draw a ellipse with blue line borders of thickness of -1 px
-        for i in range(nb_ellipse):
-            angle = random.randint(0, 180)
-            center_coordinates = (random.randint(0, self.image_size), random.randint(0, self.image_size))
-            if random.random() > 0.5:
-                axlen = random.randint(1, 100)
-            else:
-                axlen = random.randint(1, 200)
-            axesLength = (axlen, int(axlen * (1+random.random()) ))
+        if type == "ellipse":
+            startAngle = 0
+            endAngle = 360
+            # Using cv2.ellipse() method
+            # Draw a ellipse with blue line borders of thickness of -1 px
+            for i in range(nb_shapes):
+                angle = random.randint(0, 180)
+                center_coordinates = (random.randint(0, self.image_size), random.randint(0, self.image_size))
+                if random.random() > 0.5:
+                    axlen = random.randint(1, 100)
+                else:
+                    axlen = random.randint(1, 200)
+                axesLength = (axlen, int(axlen * (1+random.random()) ))
 
-            image = cv2.ellipse(fig_, center_coordinates, axesLength, angle,
-                                startAngle, endAngle, color, thickness)
-            fig_ += image
-        fig_[fig_>0] = 1
+                image = cv2.ellipse(fig_, center_coordinates, axesLength, angle,
+                                    startAngle, endAngle, color, thickness)
+                fig_ += image
+            fig_[fig_>0] = 1
+        else:
+            radius = 200
+            for i in range(nb_shapes):
+                nb_points: int = random.randint(3, 10)
+                pts: np.ndarray = gen_pts(nb_points, limit=self.image_size, radius=radius)
+                # image: np.ndarray = cv2.polylines(fig_, [pts], True, color, thickness=1)
+
+                image: np.ndarray = cv2.fillPoly(fig_, [pts], color)
+                fig_ += image
+            fig_[fig_ > 0] = 1
+
+            fig, ax = plt.subplots()
+            ax.imshow(fig_, cmap='gray')
+            plt.show()
+            ax.axis('off')
+            fig.savefig('/data/jjia/ssc_scoring/image_samples/polygonmask' + str(self.counter) + '.png')
+            plt.close()
+
         return fig_
 
 
@@ -1006,71 +1091,31 @@ class SysthesisNewSampled(MapTransform):
             self.retp_candidate = self.rand_affine_crop(self.retp_temp)
             self.gg_candidate = self.rand_affine_crop(self.gg_temp)
 
-        save_img: bool = False
-        if save_img:
-            fig, ax = plt.subplots()
-            ax.imshow(img, cmap='gray')
-            ax.axis('off')
-            fig.savefig('/data/jjia/ssc_scoring/image_samples/1_ori_img_' + str(self.counter) + '.png')
-
-            fig, ax = plt.subplots()
-            ax.imshow(self.retp_candidate, cmap='gray')
-            ax.axis('off')
-            fig.savefig('/data/jjia/ssc_scoring/image_samples/2_retp_candidate_' + str(self.counter) + '.png')
+        save_img: bool = True
+        savefig(save_img, img, 'image_samples/0_ori_img_' + str(self.counter) + '.png')
+        savefig(save_img, self.retp_candidate, 'image_samples/1_retp_candidate_' + str(self.counter) + '.png')
 
         while(1):
-            rand_gg_mask = self.random_mask(3)
-            rand_retp_mask = self.random_mask(3)
-            if save_img:
-                fig, ax = plt.subplots()
-                ax.imshow(rand_gg_mask, cmap='gray')
-                ax.axis('off')
-                fig.savefig('/data/jjia/ssc_scoring/image_samples/3_rand_gg_mask_' + str(self.counter) + '.png')
-
-                fig, ax = plt.subplots()
-                ax.imshow(rand_retp_mask, cmap='gray')
-                ax.axis('off')
-                fig.savefig('/data/jjia/ssc_scoring/image_samples/4_rand_retp_mask_' + str(self.counter) + '.png')
-
-                fig, ax = plt.subplots()
-                ax.imshow(lung_mask, cmap='gray')
-                ax.axis('off')
-                fig.savefig('/data/jjia/ssc_scoring/image_samples/5_lung_mask_' + str(self.counter) + '.png')
+            rand_retp_mask = self.random_mask(3, type="ellipse")
+            rand_gg_mask= self.random_mask(3, type="poly")
+            savefig(save_img, rand_gg_mask, 'image_samples/2_rand_gg_mask_' + str(self.counter) + '.png')
+            savefig(save_img, rand_retp_mask, 'image_samples/3_rand_retp_mask_' + str(self.counter) + '.png')
+            savefig(save_img, lung_mask, 'image_samples/4_lung_mask_' + str(self.counter) + '.png')
 
             rand_retp_mask *= lung_mask
             rand_gg_mask *= lung_mask
-            if save_img:
-                fig, ax = plt.subplots()
-                ax.imshow(rand_gg_mask, cmap='gray')
-                ax.axis('off')
-                fig.savefig('/data/jjia/ssc_scoring/image_samples/6_gg_mask_lung_' + str(self.counter) + '.png')
-
-                fig, ax = plt.subplots()
-                ax.imshow(rand_retp_mask, cmap='gray')
-                ax.axis('off')
-                fig.savefig('/data/jjia/ssc_scoring/image_samples/7_retp_mask_lung_' + str(self.counter) + '.png')
-
+            savefig(save_img, rand_gg_mask, 'image_samples/5_gg_mask_lung_' + str(self.counter) + '.png')
+            savefig(save_img, rand_retp_mask, 'image_samples/6_retp_mask_lung_' + str(self.counter) + '.png')
 
             union_mask = rand_gg_mask + rand_retp_mask
             union_mask[union_mask>0] = 1
-            if save_img:
-                fig, ax = plt.subplots()
-                ax.imshow(union_mask, cmap='gray')
-                ax.axis('off')
-                fig.savefig('/data/jjia/ssc_scoring/image_samples/8_union_mask_lung_' + str(self.counter) + '.png')
+            savefig(save_img, union_mask, 'image_samples/7_union_mask_lung_' + str(self.counter) + '.png')
 
             intersection_mask = rand_gg_mask * rand_retp_mask
             gg_exclude_retp = rand_gg_mask - intersection_mask
-            if save_img:
-                fig, ax = plt.subplots()
-                ax.imshow(intersection_mask, cmap='gray')
-                ax.axis('off')
-                fig.savefig('/data/jjia/ssc_scoring/image_samples/9_intersection_mask_lung_' + str(self.counter) + '.png')
+            savefig(save_img, intersection_mask, 'image_samples/8_intersection_mask_lung_' + str(self.counter) + '.png')
+            savefig(save_img, gg_exclude_retp, 'image_samples/9_gg_exclude_retp_' + str(self.counter) + '.png')
 
-                fig, ax = plt.subplots()
-                ax.imshow(gg_exclude_retp, cmap='gray')
-                ax.axis('off')
-                fig.savefig('/data/jjia/ssc_scoring/image_samples/10_gg_exclude_retp_' + str(self.counter) + '.png')
 
             # lung_area = np.sum(lung_mask)
             # total_dis_area = np.sum(union_mask)
@@ -1084,32 +1129,27 @@ class SysthesisNewSampled(MapTransform):
 
             smooth_edge = args.retp_blur
             rand_retp_mask = cv2.blur(rand_retp_mask, (smooth_edge, smooth_edge))
-            if save_img:
-                fig, ax = plt.subplots()
-                ax.imshow(rand_retp_mask, cmap='gray')
-                ax.axis('off')
-                fig.savefig('/data/jjia/ssc_scoring/image_samples/11_retp_mask_blur_' + str(self.counter) + '.png')
+            savefig(save_img, rand_retp_mask, 'image_samples/10_retp_mask_blur_' + str(self.counter) + '.png')
+
 
             smooth_edge = args.gg_blur
             rand_gg_mask = cv2.blur(rand_gg_mask, (smooth_edge, smooth_edge))
-            if save_img:
-                fig, ax = plt.subplots()
-                ax.imshow(rand_gg_mask, cmap='gray')
-                ax.axis('off')
-                fig.savefig('/data/jjia/ssc_scoring/image_samples/11_gg_mask_blur_' + str(self.counter) + '.png')
+            savefig(save_img, rand_gg_mask, 'image_samples/11_gg_mask_blur_' + str(self.counter) + '.png')
 
-            rand_retp_mask[rand_retp_mask > 0] = 1
-            rand_gg_mask[rand_gg_mask > 0] = 1
-            rand_retp_mask = rand_retp_mask * lung_mask
-            rand_gg_mask = rand_gg_mask * lung_mask
+            rand_retp_mask_cp = copy.deepcopy(rand_retp_mask)  # recalculate scores
+            rand_gg_mask_cp = copy.deepcopy(rand_gg_mask)
+            rand_retp_mask_cp[rand_retp_mask_cp > 0] = 1
+            rand_gg_mask_cp[rand_gg_mask_cp > 0] = 1
+            rand_retp_mask_cp = rand_retp_mask_cp * lung_mask
+            rand_gg_mask_cp = rand_gg_mask_cp * lung_mask
 
-            union_mask = rand_gg_mask + rand_retp_mask
+            union_mask = rand_gg_mask_cp + rand_retp_mask_cp
             union_mask[union_mask > 0] = 1
 
             lung_area = np.sum(lung_mask)
             total_dis_area = np.sum(union_mask)
-            gg_area = np.sum(rand_gg_mask)
-            retp_area = np.sum(rand_retp_mask)
+            gg_area = np.sum(rand_gg_mask_cp)
+            retp_area = np.sum(rand_retp_mask_cp)
 
             y_disext = int(total_dis_area / lung_area * 100)
             y_gg = int(gg_area / lung_area * 100)
@@ -1126,111 +1166,51 @@ class SysthesisNewSampled(MapTransform):
             else:
                 break
 
-
         if np.sum(y)>0:
-
-
             retp = rand_retp_mask * self.retp_candidate
-            if save_img:
-                fig, ax = plt.subplots()
-                ax.imshow(retp, cmap='gray')
-                ax.axis('off')
-                fig.savefig('/data/jjia/ssc_scoring/image_samples/12_retp_' + str(self.counter) + '.png')
+            savefig(save_img, retp, 'image_samples/12_retp_' + str(self.counter) + '.png')
 
             img_exclude_retp_mask = (1 - rand_retp_mask) * img
-            if save_img:
-                fig, ax = plt.subplots()
-                ax.imshow(img_exclude_retp_mask, cmap='gray')
-                ax.axis('off')
-                fig.savefig('/data/jjia/ssc_scoring/image_samples/13_img_exclude_retp_mask_' + str(self.counter) + '.png')
+            savefig(save_img, img_exclude_retp_mask, 'image_samples/13_img_exclude_retp_mask_' + str(self.counter) + '.png')
 
             img_wt_retp = retp + img_exclude_retp_mask
+            savefig(save_img, img_wt_retp, 'image_samples/14_img_wt_retp_' + str(self.counter) + '.png')
 
-            if save_img:
-                fig, ax = plt.subplots()
-                ax.imshow(img_wt_retp, cmap='gray')
-                ax.axis('off')
-                fig.savefig('/data/jjia/ssc_scoring/image_samples/14_img_wt_retp_' + str(self.counter) + '.png')
             if args.gen_gg_as_retp:
-
-
                 gg = rand_gg_mask * self.gg_candidate
-                if save_img:
-                    fig, ax = plt.subplots()
-                    ax.imshow(gg, cmap='gray')
-                    ax.axis('off')
-                    fig.savefig('/data/jjia/ssc_scoring/image_samples/12_gg_' + str(self.counter) + '.png')
+                savefig(save_img, gg, 'image_samples/12_gg_' + str(self.counter) + '.png')
 
                 img_exclude_gg_mask = (1 - rand_gg_mask) * img_wt_retp
-                if save_img:
-                    fig, ax = plt.subplots()
-                    ax.imshow(img_exclude_gg_mask, cmap='gray')
-                    ax.axis('off')
-                    fig.savefig(
-                        '/data/jjia/ssc_scoring/image_samples/13_img_exclude_gg_mask_' + str(self.counter) + '.png')
+                savefig(save_img, img_exclude_gg_mask, 'image_samples/13_img_exclude_gg_mask_' + str(self.counter) + '.png')
 
                 img_wt_retp_gg = gg + img_exclude_gg_mask
+                savefig(save_img, img_wt_retp_gg, 'image_samples/14_img_wt_retp_gg_' + str(self.counter) + '.png')
 
-                if save_img:
-                    fig, ax = plt.subplots()
-                    ax.imshow(img_wt_retp_gg, cmap='gray')
-                    ax.axis('off')
-                    fig.savefig('/data/jjia/ssc_scoring/image_samples/14_img_wt_retp_gg_' + str(self.counter) + '.png')
             else:
                 smooth_edge = args.gg_blur
                 rand_gg_mask = cv2.blur(rand_gg_mask, (smooth_edge, smooth_edge))
-                if save_img:
-                    fig, ax = plt.subplots()
-                    ax.imshow(rand_gg_mask, cmap='gray')
-                    ax.axis('off')
-                    fig.savefig('/data/jjia/ssc_scoring/image_samples/15_gg_mask_blur_' + str(self.counter) + '.png')
+                savefig(save_img, rand_gg_mask, 'image_samples/15_gg_mask_blur_' + str(self.counter) + '.png')
+
 
                 gg = copy.deepcopy(img_wt_retp)
-                # gg = rand_gg_mask * img_wt_retp
-                if save_img:
-                    fig, ax = plt.subplots()
-                    ax.imshow(gg, cmap='gray')
-                    ax.axis('off')
-                    fig.savefig('/data/jjia/ssc_scoring/image_samples/16_gg_candidate_' + str(self.counter) + '.png')
+                savefig(save_img, gg, 'image_samples/16_gg_candidate_' + str(self.counter) + '.png')
 
-                    # fig, ax = plt.subplots()
-                    # ax.imshow(gg_exclude_retp_, cmap='gray')
-                    # ax.axis('off')
-                    # fig.savefig('/data/jjia/ssc_scoring/image_samples/gg_exclude_retp_' + str(self.counter) + '.png')
-
-                # gg = self.add_noise(gg)  # before blur, apply noise to increase the average HU value
                 lighter_gg = copy.deepcopy(gg)
                 lighter_gg += args.gg_increase
                 gg = rand_gg_mask * lighter_gg + (1 - rand_gg_mask) * gg
-
-                if save_img:
-                    fig, ax = plt.subplots()
-                    ax.imshow(gg, cmap='gray')
-                    ax.axis('off')
-                    fig.savefig('/data/jjia/ssc_scoring/image_samples/17_gg_lighter_' + str(self.counter) + '.png')
+                savefig(save_img, gg, 'image_samples/17_gg_lighter_' + str(self.counter) + '.png')
 
                 gg_blur = 3
                 gg = cv2.blur(gg, (gg_blur, gg_blur))
-                if save_img:
-                    fig, ax = plt.subplots()
-                    ax.imshow(gg, cmap='gray')
-                    ax.axis('off')
-                    fig.savefig('/data/jjia/ssc_scoring/image_samples/18_gg_lighter_blur_' + str(self.counter) + '.png')
+                savefig(save_img, gg, 'image_samples/18_gg_lighter_blur_' + str(self.counter) + '.png')
 
                 gg = rand_gg_mask * gg
-                if save_img:
-                    fig, ax = plt.subplots()
-                    ax.imshow(gg, cmap='gray')
-                    ax.axis('off')
-                    fig.savefig('/data/jjia/ssc_scoring/image_samples/19_gg_lighter_blur_smoothed_' + str(self.counter) + '.png')
+                savefig(save_img, gg, 'image_samples/19_gg_lighter_blur_smoothed_' + str(self.counter) + '.png')
 
                 img_exclude_gg_mask = (1 - rand_gg_mask) * img_wt_retp
                 img_wt_retp_gg = img_exclude_gg_mask + gg
-                if save_img:
-                    fig, ax = plt.subplots()
-                    ax.imshow(img_wt_retp_gg, cmap='gray')
-                    ax.axis('off')
-                    fig.savefig('/data/jjia/ssc_scoring/image_samples/20_img_wt_retp_gg_' + str(self.counter) + '.png')
+                savefig(save_img, img_wt_retp_gg, 'image_samples/20_img_wt_retp_gg_' + str(self.counter) + '.png')
+
 
             return torch.from_numpy(img_wt_retp_gg.astype(np.float32)), torch.tensor(y.astype(np.float32))
         else:
@@ -1240,6 +1220,13 @@ class SysthesisNewSampled(MapTransform):
     #     gauss = np.random.normal(0, 1, img.size)
     #     gauss = gauss.reshape(img.shape[0], img.shape[1], img.shape[2]).astype('uint8')
 
+def savefig(save_flag, img, fpath):
+    if save_flag:
+        fig, ax = plt.subplots()
+        ax.imshow(img, cmap='gray')
+        ax.axis('off')
+        fig.savefig(fpath, bbox_inches='tight')
+        plt.close()
 
 class AddChannel:
     def __call__(self, image):
@@ -1934,7 +1921,7 @@ def train(id_: int):
         # else:
         #     raise Exception("synthesis_data can not be set with sampler !")
 
-    batch_size = 20
+    batch_size = 10
     log_dict['batch_size'] = batch_size
     tr_shuffle = True if sampler is None else False
     train_dataloader = DataLoader(tr_dataset, batch_size=batch_size, shuffle=tr_shuffle, num_workers=args.workers,

@@ -127,7 +127,7 @@ def saliency_map(x, y, net):  # for one image
 
     print(f'x_np.mean: {x_mean}, x_np.std: {x_std}, ')
 
-    nb_ptchs = 32
+    nb_ptchs = 16
     ptch = int(w / nb_ptchs)
     for i in range(nb_ptchs):
         for j in range(nb_ptchs):
@@ -195,77 +195,12 @@ def normalize_255(map_1_po):
     map_1_po = (map_1_po - np.min(map_1_po)) / (np.max(map_1_po) - np.min(map_1_po)) * 255
     return map_1_po
 
-
-# if __name__ == '__main__':
-#     id = 451
-#     mypath = Path(id)
-#
-#     tr_x, tr_y, vd_x, vd_y, ts_x, ts_y = prepare_data()
-#     ts_dataset = SScScoreDataset(ts_x, ts_y, transform=get_transform())
-#     test_dataloader = DataLoader(ts_dataset, batch_size=10, shuffle=False, num_workers=12)
-#     test_dataloader = iter(test_dataloader)
-#
-#     net = get_net('vgg11_bn', 3)
-#     net.load_state_dict(torch.load(mypath.model_fpath))
-#     net.eval()  # 8
-#     print(net)
-#
-#     total_nb = 10
-#     nb_img = 0
-#     x, y = [], []
-#     while nb_img < 10:
-#         print(f"nb_img, {nb_img}")
-#         batch_x, batch_y = next(test_dataloader)
-#         for x_, y_, idx in zip(batch_x, batch_y, range(10)):
-#             # print(f'idx, {idx}, y: {y_}')
-#             if idx % 3 == 0 and y_[0]>20:
-#                 print(f' y: {y_}')
-#                 x.append(x_)
-#                 y.append(y_)
-#
-#                 # x, y = x_[None], y_[None]  # (1,1,512,512)
-#                 # grad_cam(x, y, net, nb_img)
-#                 nb_img += 1
-#     # x = np.array(x)
-#     # y = np.array(y)
-#     # print(x.shape, y.shape)
-#
-#     x = torch.stack(x)
-#     y = torch.stack(y)
-#     print(x.shape, y.shape)
-#     # saliency_map(x, y, net)
-#     for x_, y_, idx in zip(x, y, range(len(y_))):
-#         # x = x[None]
-#         # y = y[None]
-#         fmap_block = []
-#         grad_block = []
-#         print(y.cpu().numpy())
-#
-#         # 注册hook, vgg has features and classifiers
-#         net.features[3].register_forward_hook(farward_hook)
-#         net.features[3].register_backward_hook(backward_hook)
-#
-#         # forward
-#         output = net(x)
-#
-#         # backward
-#         net.zero_grad()
-#         loss_fun = torch.nn.MSELoss()
-#         class_loss = loss_fun(output, y)
-#         class_loss.backward()
-#
-#         # 生成cam
-#         print(len(grad_block))
-#         grads_val = (grad_block.cpu().data.cpu().numpy().squeeze()
-#         fmap = fmap_block.cpu().data.cpu().numpy().squeeze()
-#         cam_show_img(x, fmap, grads_val, mypath.id_dir, idx)
-
 if __name__ == '__main__':
     id = 1405
     mypath = Path(id)
 
     tr_x, tr_y, vd_x, vd_y, ts_x, ts_y = prepare_data(mypath)
-    ts_dataset = SysDataset(vd_x, vd_y, transform=ssc_transformd())
+    ts_dataset = SysDataset(ts_x, ts_y, transform=ssc_transformd())
     test_dataloader = DataLoader(ts_dataset, batch_size=10, shuffle=False, num_workers=6)
     test_dataloader = iter(test_dataloader)
 
@@ -279,12 +214,12 @@ if __name__ == '__main__':
     nb_img = 0
     while nb_img < 10:
         print(f"nb_img, {nb_img}")
-        batch_x, batch_y = next(test_dataloader)
-        for x_, y_, idx in zip(batch_x, batch_y, range(10)):
+        data = next(test_dataloader)
+        xs, ys = data['image_key'], data['label_key']
+        for x_, y_, idx in zip(xs, ys, range(10)):
             print(f'idx, {idx}')
             if idx % 3 == 0:
                 print(f'idx is okay, {idx}')
-
                 x, y = x_[None], y_[None]
                 # grad_cam(x, y, net, nb_img)
                 saliency_map(x, y, net)
