@@ -1091,28 +1091,32 @@ class SysthesisNewSampled(MapTransform):
             self.retp_candidate = self.rand_affine_crop(self.retp_temp)
             self.gg_candidate = self.rand_affine_crop(self.gg_temp)
 
-        save_img: bool = True
+        save_img: bool = False
         savefig(save_img, img, 'image_samples/0_ori_img_' + str(self.counter) + '.png')
         savefig(save_img, self.retp_candidate, 'image_samples/1_retp_candidate_' + str(self.counter) + '.png')
 
         while(1):
             rand_retp_mask = self.random_mask(3, type="ellipse")
-            rand_gg_mask= self.random_mask(3, type="poly")
+            rand_gg_mask= self.random_mask(3, type="ellipse")
+
             savefig(save_img, rand_gg_mask, 'image_samples/2_rand_gg_mask_' + str(self.counter) + '.png')
             savefig(save_img, rand_retp_mask, 'image_samples/3_rand_retp_mask_' + str(self.counter) + '.png')
             savefig(save_img, lung_mask, 'image_samples/4_lung_mask_' + str(self.counter) + '.png')
 
             rand_retp_mask *= lung_mask
             rand_gg_mask *= lung_mask
+
             savefig(save_img, rand_gg_mask, 'image_samples/5_gg_mask_lung_' + str(self.counter) + '.png')
             savefig(save_img, rand_retp_mask, 'image_samples/6_retp_mask_lung_' + str(self.counter) + '.png')
 
             union_mask = rand_gg_mask + rand_retp_mask
             union_mask[union_mask>0] = 1
+
             savefig(save_img, union_mask, 'image_samples/7_union_mask_lung_' + str(self.counter) + '.png')
 
             intersection_mask = rand_gg_mask * rand_retp_mask
             gg_exclude_retp = rand_gg_mask - intersection_mask
+
             savefig(save_img, intersection_mask, 'image_samples/8_intersection_mask_lung_' + str(self.counter) + '.png')
             savefig(save_img, gg_exclude_retp, 'image_samples/9_gg_exclude_retp_' + str(self.counter) + '.png')
 
@@ -1135,6 +1139,10 @@ class SysthesisNewSampled(MapTransform):
             smooth_edge = args.gg_blur
             rand_gg_mask = cv2.blur(rand_gg_mask, (smooth_edge, smooth_edge))
             savefig(save_img, rand_gg_mask, 'image_samples/11_gg_mask_blur_' + str(self.counter) + '.png')
+
+            smooth_edge = args.gg_blur
+            intersection_mask = cv2.blur(intersection_mask, (smooth_edge, smooth_edge))
+            savefig(save_img, intersection_mask, 'image_samples/11_intersection_mask_blur_' + str(self.counter) + '.png')
 
             rand_retp_mask_cp = copy.deepcopy(rand_retp_mask)  # recalculate scores
             rand_gg_mask_cp = copy.deepcopy(rand_gg_mask)
@@ -1184,7 +1192,16 @@ class SysthesisNewSampled(MapTransform):
                 savefig(save_img, img_exclude_gg_mask, 'image_samples/13_img_exclude_gg_mask_' + str(self.counter) + '.png')
 
                 img_wt_retp_gg = gg + img_exclude_gg_mask
-                savefig(save_img, img_wt_retp_gg, 'image_samples/14_img_wt_retp_gg_' + str(self.counter) + '.png')
+                savefig(save_img, img_wt_retp_gg, 'image_samples/14_img_wt_retp_gg_wo_overlap' + str(self.counter) + '.png')
+
+                merge = 0.5 * (intersection_mask * img_wt_retp_gg) + 0.5 * (intersection_mask * img_wt_retp) # gg + retp
+                final = img_wt_retp_gg * (1 - intersection_mask) + merge
+                y_name = '_'.join([str(y[0]), str(y[1]), str(y[2])])
+                savefig(save_img, final, 'image_samples/15_img_wt_retp_gg_final_' + str(self.counter) + y_name + '.png')
+
+                  # retp part
+
+
 
             else:
                 smooth_edge = args.gg_blur

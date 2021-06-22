@@ -9,8 +9,8 @@ import argparse
 parser = argparse.ArgumentParser(description="SSc score prediction.")
 
 parser.add_argument('--mode', choices=('train', 'infer', 'continue_train', 'transfer_learning'),
-                    help='mode', type=str, default='infer')
-parser.add_argument('--eval_id', help='id used for inference, or continue_train', type=int, default=911)
+                    help='mode', type=str, default='train')
+parser.add_argument('--eval_id', help='id used for inference, or continue_train', type=int, default=0)
 parser.add_argument('--train_recon', choices=(1, 0), help='if use ReconNet and its dataset', type=int, default=0)
 
 parser.add_argument('--net', choices=('vgg11_bn', 'cnn3fc1', 'cnn2fc1', 'vgg16', 'vgg19','resnet18', 'resnext50_32x4d',
@@ -25,7 +25,7 @@ parser.add_argument('--fold', choices=(1, 2, 3, 4), help='5-fold training', type
 parser.add_argument('--level', choices=(1, 2, 3, 4, 5, 0), help='level of data, 0 denotes all', type=int, default=0)
 
 parser.add_argument('--sampler', choices=(1, 0), help='if customer sampler?', type=int, default=0)
-parser.add_argument('--sys', choices=(1, 0), help='if synthesis_data?', type=int, default=0)
+parser.add_argument('--sys', choices=(1, 0), help='if synthesis_data?', type=int, default=1)
 parser.add_argument('--sys_ratio', help='ratio of sys data in the whole data', type=float, default=0.5)
 parser.add_argument('--sys_pro_in_0', help='sys_pro_in_0', type=float, default=0.0)  # must be a float number !
 
@@ -38,15 +38,14 @@ parser.add_argument('--masked_by_lung', choices=(1, 0), help='if slices are mask
 
 parser.add_argument('--loss', choices=('mse', 'mae', 'smooth_mae', 'mse+mae', 'msehigher'), help='mode', type=str,
                     default='mse')
-parser.add_argument('--pretrained', choices=(1, 0), help='pretrained or not', type=int, default=0)
-parser.add_argument('--epochs', help='total epochs', type=int, default=1)
+parser.add_argument('--pretrained', choices=(1, 0), help='pretrained or not', type=int, default=1)
+parser.add_argument('--epochs', help='total epochs', type=int, default=1000)
 parser.add_argument('--weight_decay', help='L2 regularization', type=float, default=0.0001)  # must be a float number !
 parser.add_argument('--gg_increase', help='gg increase ratio', type=float, default=0.1)  # must be a float number !
 parser.add_argument('--retp_blur', help='retp_blur', type=int, default=20)  # must be a float number !
 parser.add_argument('--gg_blur', help='gg_blur', type=int, default=20)  # must be a float number !
 
-parser.add_argument('--gen_gg_as_retp', help='gen_gg_as_retp', type=int, choices=(1, 0), default=0)
-
+parser.add_argument('--gen_gg_as_retp', help='gen_gg_as_retp', type=int, choices=(1, 0), default=1)
 
 parser.add_argument('--outfile', help='output file when running by script instead of pycharm', type=str)
 parser.add_argument('--hostname', help='hostname of the server', type=str)

@@ -32,19 +32,20 @@ import jjnutils.util as futil
 from set_args_pos import args
 import torchvision.models as models
 import myresnet3d
+from statistics import mean
 
 
 class SmallNet_pos(nn.Module):
     def __init__(self, num_classes: int = 5, base: int = 8):
         super().__init__()
         self.features = nn.Sequential(
-            nn.Conv3d(1, base, 3, padding=1),
+            nn.Conv3d(1, base, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
             nn.MaxPool3d(kernel_size=3, stride=2),
-            nn.Conv3d(base, base * 2, 3, padding=1),
+            nn.Conv3d(base, base * 2, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
             nn.MaxPool3d(kernel_size=3, stride=2),
-            nn.Conv3d(base * 2, base * 4, 3, padding=1),
+            nn.Conv3d(base * 2, base * 4, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
             nn.MaxPool3d(kernel_size=3, stride=2),
         )
@@ -69,13 +70,13 @@ class Cnn3fc2(nn.Module):
     def __init__(self, num_classes: int = 5, base: int = 8):
         super().__init__()
         self.features = nn.Sequential(
-            nn.Conv3d(1, base, 3, padding=1),
+            nn.Conv3d(1, base, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
             nn.MaxPool3d(kernel_size=3, stride=2),
-            nn.Conv3d(base, base * 2, 3, padding=1),
+            nn.Conv3d(base, base * 2, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
             nn.MaxPool3d(kernel_size=3, stride=2),
-            nn.Conv3d(base * 2, base * 4, 3, padding=1),
+            nn.Conv3d(base * 2, base * 4, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
             nn.MaxPool3d(kernel_size=3, stride=2),
         )
@@ -409,102 +410,158 @@ def load_data_5labels(dir_pat: str, df_excel: pd.DataFrame) -> Tuple[str, np.nda
 class DatasetPos(Dataset):
     """SSc scoring dataset."""
 
-    def __init__(self, x_fpaths: Sequence, world_list: Sequence, index: Sequence = None, xform=None):
-
-        self.data_x_names, self.world_list = np.array(x_fpaths), np.array(world_list)
-
-        if index is not None:
-            self.data_x_names = self.data_x_names[index]
-            self.world_list = self.world_list[index]
-        print('loading data ...')
-        self.data_x = [futil.load_itk(x, require_ori_sp=True) for x in tqdm(self.data_x_names)]
-        self.data_x_np = [i[0] for i in self.data_x]  # shape order: z, y, x
-        normalize0to1 = ScaleIntensityRange(a_min=-1500.0, a_max=1500.0, b_min=0.0, b_max=1.0, clip=True)
-        print("normalizing ... ")
-        self.data_x_np = [normalize0to1(x_np) for x_np in tqdm(self.data_x_np)]
-        # scale data to 0~1, it's convinent for future transform during dataloader
-        self.data_x_or_sp = [[i[1], i[2]] for i in self.data_x]
-        self.ori = np.array([i[1] for i in self.data_x])  # shape order: z, y, x
-        self.sp = np.array([i[2] for i in self.data_x])  # shape order: z, y, x
-        self.y = []
-        for world, ori, sp in zip(self.world_list, self.ori, self.sp):
-            labels = [int((level_pos - ori[0]) / sp[0]) for level_pos in world]  # ori[0] is the ori of z axil
-            self.y.append(np.array(labels))
-
-        if args.fine_level:
-            x_ls = []
-            y_ls = []
-            for x, y in zip(self.data_x_np, self.y):
-                start = y[0] - args.fine_window
-                end = y[0] + args.fine_window
-                x = x[start: end]
-                x_ls.append(x)
-
-                y = y[0] - start
-                y_ls.append(y)
-
-            self.data_x_np = x_ls
-            self.y = y_ls
-
-        self.data_x_np = [x.astype(np.float32) for x in self.data_x_np]
-        self.data_y_np = [y.astype(np.float32) for y in self.y]
-
-        # randomcrop = RandomCropPos()
-        # image_, label_ = [], []
-        # for image, label in zip(self.data_x_np, self.data_y_np):
-        #     i, l = randomcrop(image, label)
-        #     image_.append(i)
-        #
-        #     label_.append(l)
-        #
-        # noise = RandGaussianNoisePos()
-        # for image, label in zip(self.data_x_np, self.data_y_np):
-        #     image, label = noise(image, label)
-        #
-
+    def __init__(self, data, xform=None):
+        self.data = data
         self.transform = xform
 
     def __len__(self):
-        return len(self.data_y_np)
+        return len(self.data)
 
     def __getitem__(self, idx):
         if torch.is_tensor(idx):
             idx = idx.tolist()
 
-        data = {'image_key': self.data_x_np[idx],
-                'label_key': self.data_y_np[idx],
-                'world_key': self.world_list[idx],
-                'space_key': self.sp[idx],
-                'origin_key': self.ori[idx],
-                'fpath_key': self.data_x_names[idx]}
-
-        check_aug_effect = 0
-        if check_aug_effect:
-            def crop_center(img, cropx, cropy):
-                y, x = img.shape
-                startx = x // 2 - (cropx // 2)
-                starty = y // 2 - (cropy // 2)
-                return img[starty:starty + cropy, startx:startx + cropx]
-
-            img_before_aug = crop_center(data['image_key'], 512, 512)
-            futil.save_itk('aug_before_' + data['fpath_key'].split('/')[-1],
-                           img_before_aug, data['origin_key'], data['space_key'], dtype='float')
-        # if self.transform:
-        #     self.data_xy=[self.transform(image, label) for image, label in zip(self.data_x_np, self.data_y_np)]
-        #     self.data_x = [x for x in self.data_xy[0]]
-        #     self.data_y = [y for y in self.data_xy[1]]
-        #     self.data_x_np = np.array(self.data_x)
-        #     self.data_y_np = np.array(self.data_y)
         if self.transform:
-            data = self.transform(data)
-
-        if check_aug_effect:
-            futil.save_itk('aug_after_' + data['fpath_key'].split('/')[-1],
-                           data['image_key'], data['origin_key'], data['space_key'], dtype='float')
+            data = self.transform(self.data[idx])
+        else:
+            data = self.data[idx]
 
         data['image_key'] = torch.as_tensor(data['image_key'])
         data['label_key'] = torch.as_tensor(data['label_key'])
 
+        return data
+#
+#
+#
+# class DatasetPos(Dataset):
+#     """SSc scoring dataset."""
+#
+#     def __init__(self, x_fpaths: Sequence, world_list: Sequence, index: Sequence = None, xform=None):
+#
+#         self.data_x_names, self.world_list = np.array(x_fpaths), np.array(world_list)
+#
+#         if index is not None:
+#             self.data_x_names = self.data_x_names[index]
+#             self.world_list = self.world_list[index]
+#         print('loading data ...')
+#         self.data_x = [futil.load_itk(x, require_ori_sp=True) for x in tqdm(self.data_x_names)]
+#         self.data_x_np = [i[0] for i in self.data_x]  # shape order: z, y, x
+#         normalize0to1 = ScaleIntensityRange(a_min=-1500.0, a_max=1500.0, b_min=0.0, b_max=1.0, clip=True)
+#         print("normalizing ... ")
+#         self.data_x_np = [normalize0to1(x_np) for x_np in tqdm(self.data_x_np)]
+#         # scale data to 0~1, it's convinent for future transform during dataloader
+#         self.data_x_or_sp = [[i[1], i[2]] for i in self.data_x]
+#         self.ori = np.array([i[1] for i in self.data_x])  # shape order: z, y, x
+#         self.sp = np.array([i[2] for i in self.data_x])  # shape order: z, y, x
+#         self.y = []
+#         for world, ori, sp in zip(self.world_list, self.ori, self.sp):
+#             labels = [int((level_pos - ori[0]) / sp[0]) for level_pos in world]  # ori[0] is the ori of z axil
+#             self.y.append(np.array(labels))
+#
+#         if args.fine_level:
+#             x_ls = []
+#             y_ls = []
+#             for x, y in zip(self.data_x_np, self.y):
+#                 start = y[0] - args.fine_window
+#                 end = y[0] + args.fine_window
+#                 x = x[start: end]
+#                 x_ls.append(x)
+#
+#                 y = y[0] - start
+#                 y_ls.append(y)
+#
+#             self.data_x_np = x_ls
+#             self.y = y_ls
+#
+#         self.data_x_np = [x.astype(np.float32) for x in self.data_x_np]
+#         self.data_y_np = [y.astype(np.float32) for y in self.y]
+#
+#         # randomcrop = RandomCropPos()
+#         # image_, label_ = [], []
+#         # for image, label in zip(self.data_x_np, self.data_y_np):
+#         #     i, l = randomcrop(image, label)
+#         #     image_.append(i)
+#         #
+#         #     label_.append(l)
+#         #
+#         # noise = RandGaussianNoisePos()
+#         # for image, label in zip(self.data_x_np, self.data_y_np):
+#         #     image, label = noise(image, label)
+#         #
+#
+#         self.transform = xform
+#
+#     def __len__(self):
+#         return len(self.data_y_np)
+#
+#     def __getitem__(self, idx):
+#         if torch.is_tensor(idx):
+#             idx = idx.tolist()
+#
+#         data = {'image_key': self.data_x_np[idx],
+#                 'label_key': self.data_y_np[idx],
+#                 'world_key': self.world_list[idx],
+#                 'space_key': self.sp[idx],
+#                 'origin_key': self.ori[idx],
+#                 'fpath_key': self.data_x_names[idx]}
+#
+#         check_aug_effect = 0
+#         if check_aug_effect:
+#             def crop_center(img, cropx, cropy):
+#                 y, x = img.shape
+#                 startx = x // 2 - (cropx // 2)
+#                 starty = y // 2 - (cropy // 2)
+#                 return img[starty:starty + cropy, startx:startx + cropx]
+#
+#             img_before_aug = crop_center(data['image_key'], 512, 512)
+#             futil.save_itk('aug_before_' + data['fpath_key'].split('/')[-1],
+#                            img_before_aug, data['origin_key'], data['space_key'], dtype='float')
+#         # if self.transform:
+#         #     self.data_xy=[self.transform(image, label) for image, label in zip(self.data_x_np, self.data_y_np)]
+#         #     self.data_x = [x for x in self.data_xy[0]]
+#         #     self.data_y = [y for y in self.data_xy[1]]
+#         #     self.data_x_np = np.array(self.data_x)
+#         #     self.data_y_np = np.array(self.data_y)
+#         if self.transform:
+#             data = self.transform(data)
+#
+#         if check_aug_effect:
+#             futil.save_itk('aug_after_' + data['fpath_key'].split('/')[-1],
+#                            data['image_key'], data['origin_key'], data['space_key'], dtype='float')
+#
+#         data['image_key'] = torch.as_tensor(data['image_key'])
+#         data['label_key'] = torch.as_tensor(data['label_key'])
+#
+#         return data
+#
+#
+class LoadDatad:
+    def __init__(self):
+        self.normalize0to1 = ScaleIntensityRange(a_min=-1500.0, a_max=1500.0, b_min=0.0, b_max=1.0, clip=True)
+
+    def __call__(self, data: Dict[str, float]) -> Dict[Hashable, np.ndarray]:
+        fpath = data['fpath']
+        world_pos = data['world_pos']
+        data_x = futil.load_itk(fpath, require_ori_sp=True)
+        x = data_x[0]  # shape order: z, y, x
+        print("cliping ... ")
+        x[x<-1500] = -1500
+        x[x>1500] = 1500
+        # x = self.normalize0to1(x)
+        # scale data to 0~1, it's convinent for future transform (add noise) during dataloader
+        ori = np.array(data_x[1])  # shape order: z, y, x
+        sp = np.array(data_x[2])  # shape order: z, y, x
+        y = ((world_pos - ori[0]) / sp[0]).astype(int)
+
+        data_x_np = x.astype(np.float32)
+        data_y_np = y.astype(np.float32)
+
+        data = {'image_key': data_x_np,
+                'label_key': data_y_np,
+                'world_key': world_pos,
+                'space_key': sp,
+                'origin_key': ori,
+                'fpath_key': fpath}
         return data
 
 
@@ -585,8 +642,8 @@ def shiftd(d, start, z_size, y_size, x_size):
                      start[2]:start[2] + x_size]
     d['label_key'] = d['label_key'] - start[0]  # image is shifted up, and relative position should be down
 
-    d['label_key'][d['label_key'] < 0] = 0  # any position outside the edge would be set as edge
-    d['label_key'][d['label_key'] > z_size] = z_size  # any position outside the edge would be set as edge
+    d['label_key'][d['label_key'] < 0] = args.lower_value  # any position outside the edge would be set as edge
+    d['label_key'][d['label_key'] > z_size] = args.upper_value  # any position outside the edge would be set as edge
 
     return d
 
@@ -640,16 +697,17 @@ class CropLevelRegiond:
     def __init__(self, level):
         self.level = level
         self.height_mm = 64
-        self.height = args.fine_window  # 95% CI
+        self.height = args.z_size  # 95% CI
 
     def __call__(self, data: Mapping[Hashable, np.ndarray]) -> Dict[Hashable, np.ndarray]:
         d = dict(data)
-        label = d['label_key']  # z slice number
-        lower = label - self.height
+        label: int = d['label_key']  # z slice number
+        lower: int = max(0, label - self.height)
         start = random.randint(lower, label)
         end = start + self.height
         if end > d['image_key'].shape[0]:
             end = d['image_key'].shape[0]
+            start = end - self.height
         d['image_key'] = d['image_key'][start: end].astype(np.float32)
 
         d['label_key'] = d['label_key'] - start
@@ -684,12 +742,14 @@ class ComposePosd:
 
 
 def get_xformd(mode=None, level=None):
-    xforms = []
+    xforms = [LoadDatad()]
     if level:
         xforms.append(CropLevelRegiond(level))
     else:
         if mode == 'train':
-            xforms.extend([RandomCropPosd(), RandGaussianNoisePosd()])
+            # xforms.extend([RandomCropPosd(), RandGaussianNoisePosd()])
+            xforms.extend([RandomCropPosd()])
+
         else:
             xforms.extend([CenterCropPosd()])
 
@@ -812,10 +872,21 @@ def start_run(mode, net, dataloader, epochs, loss_fun, loss_fun_mae, opt, scaler
     batch_idx = 0
     total_loss = 0
     total_loss_mae = 0
+
+    t0 = time.time()
+    t_load_data, t_to_device, t_train_per_step = [], [], []
     for data in dataloader:
+
+        t1 = time.time()
+        t_load_data.append(t1 - t0)
 
         batch_x = data['image_key'].to(device)
         batch_y = data['label_key'].to(device)
+        sp_z = data['space_key'][:, 0].reshape(-1, 1).to(device)
+
+
+        t2 = time.time()
+        t_to_device.append(t2 - t1)
 
         if amp:
             with torch.cuda.amp.autocast():
@@ -824,8 +895,8 @@ def start_run(mode, net, dataloader, epochs, loss_fun, loss_fun_mae, opt, scaler
                         pred = net(batch_x)
                 else:
                     pred = net(batch_x)
-                pred *= data['space_key'][:, 0].reshape(-1, 1).to(device)
-                batch_y *= data['space_key'][:, 0].reshape(-1, 1).to(device)
+                pred *= sp_z
+                batch_y *= sp_z
 
                 loss = loss_fun(pred, batch_y)
 
@@ -842,8 +913,8 @@ def start_run(mode, net, dataloader, epochs, loss_fun, loss_fun_mae, opt, scaler
                     pred = net(batch_x)
             else:
                 pred = net(batch_x)
-            pred *= data['space_key'][:, 0].reshape(-1, 1).to(device)
-            batch_y *= data['space_key'][:, 0].reshape(-1, 1).to(device)
+            pred *= sp_z
+            batch_y *= sp_z
 
             loss = loss_fun(pred, batch_y)
 
@@ -854,7 +925,11 @@ def start_run(mode, net, dataloader, epochs, loss_fun, loss_fun_mae, opt, scaler
                 loss.backward()
                 opt.step()
 
-        print(loss.item(), pred[0].clone().detach().cpu().numpy())
+        t3 = time.time()
+        t_train_per_step.append(t3 - t2)
+
+        print('loss:', loss.item(), 'pred:', (pred[0]/sp_z).clone().detach().cpu().numpy(),
+              'label:', (batch_y/sp_z).clone().detach().cpu().numpy())
 
         total_loss += loss.item()
         total_loss_mae += loss_mae.item()
@@ -862,6 +937,17 @@ def start_run(mode, net, dataloader, epochs, loss_fun, loss_fun_mae, opt, scaler
 
         p1 = threading.Thread(target=record_GPU_info)
         p1.start()
+
+        t0 = t3  # reset the t0
+
+    t_load_data, t_to_device, t_train_per_step = mean(t_load_data), mean(t_to_device), mean(t_train_per_step)
+    if "t_load_data" not in log_dict:
+        log_dict.update({"t_load_data": t_load_data,
+                         "t_to_device": t_to_device,
+                         "t_train_per_step": t_train_per_step})
+    print({"t_load_data": t_load_data,
+                     "t_to_device": t_to_device,
+                     "t_train_per_step": t_train_per_step})
 
     ave_loss = total_loss / batch_idx
     ave_loss_mae = total_loss_mae / batch_idx
@@ -1045,21 +1131,47 @@ def all_loader(mypath, data_dir, label_file, kfold_seed=49):
 
     tr_x, tr_y, vd_x, vd_y, ts_x, ts_y = prepare_data(mypath, data_dir, label_file, kfold_seed=kfold_seed,
                                                       fold=args.fold, total_folds=args.total_folds)
-    tr_x, tr_y, vd_x, vd_y, ts_x, ts_y = tr_x[:10], tr_y[:10], vd_x[:10], vd_y[:10], ts_x[:10], ts_y[:10]
+    # tr_x, tr_y, vd_x, vd_y, ts_x, ts_y = tr_x[:6], tr_y[:6], vd_x[:6], vd_y[:6], ts_x[:6], ts_y[:6]
     log_dict['tr_pat_nb'] = len(tr_x)
     log_dict['vd_pat_nb'] = len(vd_x)
     log_dict['ts_pat_nb'] = len(ts_x)
+    tr_data = [{'fpath': x, 'world_pos': y} for x, y in zip(tr_x, tr_y)]
+    vd_data = [{'fpath': x, 'world_pos': y} for x, y in zip(vd_x, vd_y)]
+    ts_data = [{'fpath': x, 'world_pos': y} for x, y in zip(ts_x, ts_y)]
 
-    tr_dataset = DatasetPos(x_fpaths=tr_x, world_list=tr_y, xform=get_xformd('train', level=args.fine_level))
+    # tr_dataset = DatasetPos(tr_data, xform=get_xformd('train', level=args.fine_level))
+    # vdaug_dataset = DatasetPos(vd_data[:5], xform=get_xformd('train', level=args.fine_level))
+    # vd_dataset =DatasetPos(vd_data[:5], xform=get_xformd('valid', level=args.fine_level))
+    if args.if_test:
+        ts_dataset =DatasetPos(ts_data[:5], xform=get_xformd('test', level=args.fine_level))
+    else:
+        ts_dataset = None
+    tr_dataset = monai.data.SmartCacheDataset(data=tr_data[:4], transform=get_xformd('train', level=args.fine_level),
+                                              replace_rate=0.2, cache_num=4, num_init_workers=4,
+                                              num_replace_workers=8) #or self.n_train > self.tr_nb_cache
+    vd_dataset = monai.data.CacheDataset(data=vd_data[:4], transform=get_xformd('valid', level=args.fine_level),
+                                         num_workers=4, cache_rate=1)
+    vdaug_dataset = monai.data.CacheDataset(data=vd_data[:4], transform=get_xformd('train', level=args.fine_level),
+                                         num_workers=4, cache_rate=1)
+
+    # tr_dataset = DatasetPos(x_fpaths=tr_x, world_list=tr_y, xform=get_xformd('train', level=args.fine_level))
     # have compatible learning curve
-    vdaug_dataset = DatasetPos(x_fpaths=vd_x, world_list=vd_y, xform=get_xformd('train', level=args.fine_level))
-    vd_dataset = DatasetPos(x_fpaths=vd_x, world_list=vd_y, xform=get_xformd('valid', level=args.fine_level))
-    ts_dataset = DatasetPos(x_fpaths=ts_x, world_list=ts_y, xform=get_xformd('test', level=args.fine_level))
+    # vdaug_dataset = DatasetPos(x_fpaths=vd_x, world_list=vd_y, xform=get_xformd('train', level=args.fine_level))
+    # vd_dataset = DatasetPos(x_fpaths=vd_x, world_list=vd_y, xform=get_xformd('valid', level=args.fine_level))
+    # ts_dataset = DatasetPos(x_fpaths=ts_x, world_list=ts_y, xform=get_xformd('test', level=args.fine_level))
 
-    train_dataloader = DataLoader(tr_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.workers)
-    validaug_dataloader = DataLoader(vdaug_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.workers)
-    valid_dataloader = DataLoader(vd_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.workers)
-    test_dataloader = DataLoader(ts_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.workers)
+    train_dataloader = DataLoader(tr_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.workers,
+                                 pin_memory=True, persistent_workers=True)
+    validaug_dataloader = DataLoader(vdaug_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.workers,
+                                 pin_memory=True, persistent_workers=True)
+    valid_dataloader = DataLoader(vd_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.workers,
+                                 pin_memory=True, persistent_workers=True)
+    if args.if_test:
+        test_dataloader = DataLoader(ts_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.workers,
+                                     pin_memory=True, persistent_workers=True)
+    else:
+        test_dataloader = None
+
     return train_dataloader, validaug_dataloader, valid_dataloader, test_dataloader
 
 
@@ -1110,11 +1222,13 @@ def train(id: int):
         if args.mode in ['train', 'continue_train']:
             start_run('train', net, train_dataloader, epochs, loss_fun, loss_fun_mae, opt, scaler, mypath,
                       i)
-        # run the validation
-        valid_mae_best = start_run('valid', net, valid_dataloader, epochs, loss_fun, loss_fun_mae, opt,
-                                   scaler, mypath, i, valid_mae_best)
-        start_run('validaug', net, validaug_dataloader, epochs, loss_fun, loss_fun_mae, opt, scaler, mypath, i)
-        start_run('test', net, test_dataloader, epochs, loss_fun, loss_fun_mae, opt, scaler, mypath, i)
+        if i % args.valid_period==0:
+            # run the validation
+            valid_mae_best = start_run('valid', net, valid_dataloader, epochs, loss_fun, loss_fun_mae, opt,
+                                       scaler, mypath, i, valid_mae_best)
+            start_run('validaug', net, validaug_dataloader, epochs, loss_fun, loss_fun_mae, opt, scaler, mypath, i)
+            if args.if_test:
+                start_run('test', net, test_dataloader, epochs, loss_fun, loss_fun_mae, opt, scaler, mypath, i)
 
     dataloader_dict = {'train': train_dataloader, 'valid': valid_dataloader,
                        'test': test_dataloader, 'validaug': validaug_dataloader}
@@ -1244,8 +1358,11 @@ def record_best_preds(net: torch.nn.Module, dataloader_dict: Dict[str, DataLoade
     net.load_state_dict(torch.load(mypath.model_fpath, map_location=device))  # load the best weights to do evaluation
     net.eval()
     for mode, dataloader in dataloader_dict.items():
-        evaluater = Evaluater(net, dataloader, mode, mypath)
-        evaluater.run()
+        try:
+            evaluater = Evaluater(net, dataloader, mode, mypath)
+            evaluater.run()
+        except:
+            continue
 
 
 def record_preds(mode, batch_y, pred, mypath, data):

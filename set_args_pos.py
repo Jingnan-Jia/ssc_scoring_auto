@@ -28,8 +28,8 @@ parser.add_argument('--workers',  help='number of workers for dataloader', type=
 parser.add_argument('--ts_level_nb', choices=(235, 240), help='if customer sampler?', type=int, default=240)
 parser.add_argument('--masked_by_lung', choices=(1, 0), help='if slices are masked by lung masks', type=int, default=0)
 
-parser.add_argument('--fine_level', choices=(0, 1, 2, 3, 4, 5), help='train network for the level', type=int, default=0)
-parser.add_argument('--fine_window', help='patch size along z', type=int, default=48)
+parser.add_argument('--fine_level', choices=(0, 1, 2, 3, 4, 5), help='train network for the level', type=int, default=1)
+# parser.add_argument('--fine_window', help='patch size along z', type=int, default=48)
 
 parser.add_argument('--resample_z', help='resample along z axis', choices=(0, 256, 512, 800, 1024), type=int, default=0)
 parser.add_argument('--z_size', help='length of patch along z axil ', type=int, default=192)
