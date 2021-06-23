@@ -339,44 +339,27 @@ class Vgg11_3d(nn.Module):
 
 def get_net_pos(name: str, nb_cls: int):
     if name == 'cnn3fc1':
-        net = SmallNet_pos(num_classes=5)
+        net = SmallNet_pos(num_classes=nb_cls)
     elif name == 'cnn3fc2':
-        net = Cnn3fc2(num_classes=5)
+        net = Cnn3fc2(num_classes=nb_cls)
     elif name == 'cnn4fc2':
-        net = Cnn4fc2(num_classes=5)
+        net = Cnn4fc2(num_classes=nb_cls)
     elif name == 'cnn5fc2':
-        net = Cnn5fc2(num_classes=5)
+        net = Cnn5fc2(num_classes=nb_cls)
     elif name == 'cnn6fc2':
-        net = Cnn6fc2(num_classes=5)
+        net = Cnn6fc2(num_classes=nb_cls)
     elif name == "vgg11_3d":
-        net = Vgg11_3d(num_classes=5)
+        net = Vgg11_3d(num_classes=nb_cls)
     elif name == "r3d_resnet":
         if args.pretrained:  # inplane=64
             net = models.video.r3d_18(pretrained=True, progress=True)
             net.stem[0] = nn.Conv3d(1, 64, kernel_size=(3, 7, 7), stride=(1, 2, 2),
                                     padding=(1, 3, 3), bias=False)
-            net.fc = torch.nn.Linear(in_features=512, out_features=5)
+            net.fc = torch.nn.Linear(in_features=512, out_features=nb_cls)
         else:  # inplane = 8
-            net = myresnet3d.r3d_18(pretrained=False, num_classes=5)
+            net = myresnet3d.r3d_18(pretrained=False, num_classes=nb_cls)
             net.stem[0] = nn.Conv3d(1, 8, kernel_size=(3, 7, 7), stride=(1, 2, 2),
                                     padding=(1, 3, 3), bias=False)
-
-
-
-
-    elif 'vgg' in name:
-        if name == 'vgg11_bn':
-            net = models.vgg11_bn(pretrained=args.pretrained, progress=True)
-        elif name == 'vgg16':
-            net = models.vgg16(pretrained=args.pretrained, progress=True)
-        elif name == 'vgg19':
-            net = models.vgg19(pretrained=args.pretrained, progress=True)
-        else:
-            raise Exception("Wrong vgg net name specified ", name)
-        net.features[0] = nn.Conv2d(1, 64, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))  # change in_features to 1
-        net.classifier[0] = torch.nn.Linear(in_features=512 * 7 * 7, out_features=args.fc1_nodes)
-        net.classifier[3] = torch.nn.Linear(in_features=args.fc1_nodes, out_features=args.fc2_nodes)
-        net.classifier[6] = torch.nn.Linear(in_features=args.fc2_nodes, out_features=3)
     else:
         raise Exception('wrong net name', name)
     net_parameters = futil.count_parameters(net)
@@ -694,16 +677,26 @@ class RandomCropPosd:
 #         self.level = level
 
 class CropLevelRegiond:
-    def __init__(self, level):
+    def __init__(self, level: int, rand_start: bool = True, start: Optional[int] = None):
         self.level = level
-        self.height_mm = 64
         self.height = args.z_size  # 95% CI
+        self.rand_start = rand_start
+        self.start = start
 
     def __call__(self, data: Mapping[Hashable, np.ndarray]) -> Dict[Hashable, np.ndarray]:
         d = dict(data)
+        d['label_key'] = d['label_key'][self.level-1]
         label: int = d['label_key']  # z slice number
         lower: int = max(0, label - self.height)
-        start = random.randint(lower, label)
+        if self.rand_start:
+            start = random.randint(lower, label)  # between lower and label
+        else:
+            start = self.start
+            if start < lower:
+                raise Exception(f"start position {start} is lower than the lower line {lower}")
+            if start > label:
+                raise Exception(f"start position {start} is higher than the label line {label}")
+
         end = start + self.height
         if end > d['image_key'].shape[0]:
             end = d['image_key'].shape[0]
@@ -713,7 +706,7 @@ class CropLevelRegiond:
         d['label_key'] = d['label_key'] - start
         d['label_key'] = np.array(d['label_key']).reshape(-1, ).astype(np.float32)
 
-        d['world_key'] = d['world_key'][0]
+        d['world_key'] = d['world_key'][self.level-1]
         d['world_key'] = np.array(d['world_key']).reshape(-1, ).astype(np.float32)
 
         return d
@@ -744,7 +737,7 @@ class ComposePosd:
 def get_xformd(mode=None, level=None):
     xforms = [LoadDatad()]
     if level:
-        xforms.append(CropLevelRegiond(level))
+        xforms.append(CropLevelRegiond(level, rand_start=True))
     else:
         if mode == 'train':
             # xforms.extend([RandomCropPosd(), RandGaussianNoisePosd()])
@@ -1146,12 +1139,12 @@ def all_loader(mypath, data_dir, label_file, kfold_seed=49):
         ts_dataset =DatasetPos(ts_data[:5], xform=get_xformd('test', level=args.fine_level))
     else:
         ts_dataset = None
-    tr_dataset = monai.data.SmartCacheDataset(data=tr_data[:4], transform=get_xformd('train', level=args.fine_level),
-                                              replace_rate=0.2, cache_num=4, num_init_workers=4,
+    tr_dataset = monai.data.SmartCacheDataset(data=tr_data, transform=get_xformd('train', level=args.fine_level),
+                                              replace_rate=0.2, cache_num=40, num_init_workers=4,
                                               num_replace_workers=8) #or self.n_train > self.tr_nb_cache
-    vd_dataset = monai.data.CacheDataset(data=vd_data[:4], transform=get_xformd('valid', level=args.fine_level),
+    vd_dataset = monai.data.CacheDataset(data=vd_data, transform=get_xformd('valid', level=args.fine_level),
                                          num_workers=4, cache_rate=1)
-    vdaug_dataset = monai.data.CacheDataset(data=vd_data[:4], transform=get_xformd('train', level=args.fine_level),
+    vdaug_dataset = monai.data.CacheDataset(data=vd_data, transform=get_xformd('train', level=args.fine_level),
                                          num_workers=4, cache_rate=1)
 
     # tr_dataset = DatasetPos(x_fpaths=tr_x, world_list=tr_y, xform=get_xformd('train', level=args.fine_level))
@@ -1200,7 +1193,11 @@ def compute_metrics(mypath: Path):
 
 def train(id: int):
     mypath = Path(id)
-    net: torch.nn.Module = get_net_pos(args.net, 5)
+    if args.fine_level:
+        outs = 1
+    else:
+        outs = 5
+    net: torch.nn.Module = get_net_pos(args.net, outs)
     data_dir = dataset_dir(args.resample_z)
     label_file = "dataset/SSc_DeepLearning/GohScores.xlsx"
     train_dataloader, validaug_dataloader, valid_dataloader, test_dataloader = all_loader(mypath, data_dir, label_file)
@@ -1256,6 +1253,7 @@ def SlidingLoader(fpath, label, z_size, stride=1, batch_size=1):
 
         if i < batch_size:
             print(f'start: {start}, i: {i}')
+            crop = CropLevelRegiond(level=args.level_fine, rand_start= False, start = start)
             patch: np.ndarray = raw_x[start:start + z_size]  # z, y, z
             patch = patch.astype(np.float32)
             new_label: torch.Tensor = label - start

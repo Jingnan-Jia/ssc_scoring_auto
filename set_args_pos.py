@@ -30,6 +30,8 @@ parser.add_argument('--masked_by_lung', choices=(1, 0), help='if slices are mask
 
 parser.add_argument('--fine_level', choices=(0, 1, 2, 3, 4, 5), help='train network for the level', type=int, default=1)
 # parser.add_argument('--fine_window', help='patch size along z', type=int, default=48)
+parser.add_argument('--if_test', choices=(1, 0), help='if customer sampler?', type=int, default=0)
+parser.add_argument('--valid_period', help='how many epochs between 2 validation', type=int, default=5)
 
 parser.add_argument('--resample_z', help='resample along z axis', choices=(0, 256, 512, 800, 1024), type=int, default=0)
 parser.add_argument('--z_size', help='length of patch along z axil ', type=int, default=192)
@@ -38,7 +40,7 @@ parser.add_argument('--x_size', help='length of patch along x axil ', type=int, 
 
 parser.add_argument('--loss', choices=('mse', 'mae', 'smooth_mae', 'mse+mae', 'msehigher'), help='mode', type=str,
                     default='mse')
-parser.add_argument('--epochs', help='total epochs', type=int, default=1000)
+parser.add_argument('--epochs', help='total epochs', type=int, default=500)
 parser.add_argument('--weight_decay', help='L2 regularization', type=float, default=0.0001)  # must be a float number !
 parser.add_argument('--batch_size', help='batch_size', type=int, default=1)
 parser.add_argument('--infer_stride', help='infer_stride', type=int, default=4)
