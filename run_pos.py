@@ -393,7 +393,7 @@ def load_data_5labels(dir_pat: str, df_excel: pd.DataFrame) -> Tuple[str, np.nda
 class DatasetPos(Dataset):
     """SSc scoring dataset."""
 
-    def __init__(self, data, xform=None):
+    def __init__(self, data: Dict, xform=None):
         self.data = data
         self.transform = xform
 
@@ -522,7 +522,7 @@ class LoadDatad:
     def __init__(self):
         self.normalize0to1 = ScaleIntensityRange(a_min=-1500.0, a_max=1500.0, b_min=0.0, b_max=1.0, clip=True)
 
-    def __call__(self, data: Dict[str, float]) -> Dict[Hashable, np.ndarray]:
+    def __call__(self, data: Dict) -> Dict[Hashable, np.ndarray]:
         fpath = data['fpath']
         world_pos = data['world_pos']
         data_x = futil.load_itk(fpath, require_ori_sp=True)
@@ -541,6 +541,7 @@ class LoadDatad:
 
         data = {'image_key': data_x_np,
                 'label_key': data_y_np,
+                'ori_label_key': data_y_np,
                 'world_key': world_pos,
                 'space_key': sp,
                 'origin_key': ori,
@@ -1233,39 +1234,47 @@ def train(id: int):
     compute_metrics(mypath)
 
 
-def SlidingLoader(fpath, label, z_size, stride=1, batch_size=1):
+def SlidingLoader(fpath, world_pos, z_size, stride=1, batch_size=1):
     print(f'start load {fpath} for sliding window inference')
-    raw_x, ori, sp = futil.load_itk(fpath, require_ori_sp=True)
-    normalize0to1 = ScaleIntensityRange(a_min=-1500.0, a_max=1500.0, b_min=0.0, b_max=1.0, clip=True)
-    raw_x = normalize0to1(raw_x)
-    raw_x = (raw_x - np.mean(raw_x)) / np.std(raw_x)
+    trans = ComposePosd([LoadDatad(), MyNormalizeImagePosd()])
+    data = trans(data={'fpath': fpath, 'world_pos':world_pos})
+
+    raw_x = data['image_key']
+    label = data['label_key']
+
     assert raw_x.shape[0] > z_size
-    ranges = raw_x.shape[0] - z_size
-    print(f'ranges: {ranges}')
+    start_lower: int = label[args.level_fine-1] - z_size
+    start_higher: int = label[args.level_fine-1] + z_size,
+    start_lower = max(0, start_lower)
+    start_higher = min(raw_x.shape[0], start_higher)
+
+    # ranges = raw_x.shape[0] - z_size
+    print(f'ranges: {start_lower} to {start_higher}')
 
     batch_patch = []
     batch_new_label = []
     batch_start = []
     i = 0
 
-    start = 0
-    while start < ranges:
-
+    start = start_lower
+    while start < start_higher:
         if i < batch_size:
             print(f'start: {start}, i: {i}')
             crop = CropLevelRegiond(level=args.level_fine, rand_start= False, start = start)
-            patch: np.ndarray = raw_x[start:start + z_size]  # z, y, z
-            patch = patch.astype(np.float32)
-            new_label: torch.Tensor = label - start
-            patch = patch[None]  # add a channel
-            batch_patch.append(patch)
-            batch_new_label.append(new_label.numpy())
+            new_data = crop(data)
+            new_patch, new_label = new_data['image_key'], new_data['label_key']
+            # patch: np.ndarray = raw_x[start:start + z_size]  # z, y, z
+            # patch = patch.astype(np.float32)
+            # new_label: torch.Tensor = label - start
+            new_patch = new_patch[None]  # add a channel
+            batch_patch.append(new_patch)
+            batch_new_label.append(new_label)
             batch_start.append(start)
 
             start += stride
             i += 1
 
-        if start >= ranges or i >= batch_size:
+        if start >= start_higher or i >= batch_size:
             batch_patch = torch.tensor(np.array(batch_patch))
             batch_new_label = torch.tensor(batch_new_label)
             batch_start = torch.tensor(batch_start)
@@ -1288,8 +1297,8 @@ class Evaluater():
     def run(self):
         for batch_data in self.dataloader:
             for idx in range(len(batch_data['image_key'])):
-                sliding_loader = SlidingLoader(batch_data['fpath_key'][idx], batch_data['label_key'][idx],
-                                               stride=args.infer_stride, z_size=args.z_size, batch_size=args.batch_size)
+                sliding_loader = SlidingLoader(batch_data['fpath_key'][idx], batch_data['world_pos'][idx],
+                                               z_size=args.z_size, stride=args.infer_stride, batch_size=args.batch_size)
                 pred_ls = []
                 pred_in_patch_ls = []
                 label_in_patch_ls = []
