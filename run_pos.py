@@ -12,6 +12,8 @@ import threading
 import time
 from typing import (Dict, List, Tuple, Hashable,
                     Optional, Sequence, Union, Mapping)
+from typing import IO, TYPE_CHECKING, Any, Callable, Dict, List, Optional, Sequence, Union
+
 from tqdm import tqdm
 import monai
 import numpy as np
@@ -393,7 +395,7 @@ def load_data_5labels(dir_pat: str, df_excel: pd.DataFrame) -> Tuple[str, np.nda
 class DatasetPos(Dataset):
     """SSc scoring dataset."""
 
-    def __init__(self, data: Dict, xform=None):
+    def __init__(self, data: Sequence, xform: Union[Sequence[Callable], Callable] =None):
         self.data = data
         self.transform = xform
 
@@ -410,7 +412,7 @@ class DatasetPos(Dataset):
             data = self.data[idx]
 
         data['image_key'] = torch.as_tensor(data['image_key'])
-        data['label_key'] = torch.as_tensor(data['label_key'])
+        data['label_in_patch_key'] = torch.as_tensor(data['label_in_patch_key'])
 
         return data
 #
@@ -539,13 +541,13 @@ class LoadDatad:
         data_x_np = x.astype(np.float32)
         data_y_np = y.astype(np.float32)
 
-        data = {'image_key': data_x_np,
-                'label_key': data_y_np,
-                'ori_label_key': data_y_np,
-                'world_key': world_pos,
-                'space_key': sp,
-                'origin_key': ori,
-                'fpath_key': fpath}
+        data = {'image_key': data_x_np,  # original image
+                'label_in_patch_key': data_y_np,  # relative label (slice number) in  a patch, np.array with shape(-1, )
+                'label_in_img_key': data_y_np,  # label in  the whole image, keep fixed, a np.array with shape(-1, )
+                'world_key': world_pos,  # world position in mm, keep fixed,  a np.array with shape(-1, )
+                'space_key': sp,  # space,  a np.array with shape(-1, )
+                'origin_key': ori,  # origin,  a np.array with shape(-1, )
+                'fpath_key': fpath}  # full path, a string
         return data
 
 
@@ -624,10 +626,10 @@ class RandGaussianNoisePosd:
 def shiftd(d, start, z_size, y_size, x_size):
     d['image_key'] = d['image_key'][start[0]:start[0] + z_size, start[1]:start[1] + y_size,
                      start[2]:start[2] + x_size]
-    d['label_key'] = d['label_key'] - start[0]  # image is shifted up, and relative position should be down
+    d['label_in_patch_key'] = d['label_in_img_key'] - start[0]  # image is shifted up, and relative position down
 
-    d['label_key'][d['label_key'] < 0] = args.lower_value  # any position outside the edge would be set as edge
-    d['label_key'][d['label_key'] > z_size] = args.upper_value  # any position outside the edge would be set as edge
+    d['label_in_patch_key'][d['label_in_patch_key'] < 0] = args.lower_value  # any position outside the edge would be set as edge
+    d['label_in_patch_key'][d['label_in_patch_key'] > z_size] = args.upper_value  # any position outside the edge would be set as edge
 
     return d
 
@@ -673,10 +675,6 @@ class RandomCropPosd:
         return d
 
 
-# class CropLevelRegiond:
-#     def __init__(self, level):
-#         self.level = level
-
 class CropLevelRegiond:
     def __init__(self, level: int, rand_start: bool = True, start: Optional[int] = None):
         self.level = level
@@ -686,8 +684,8 @@ class CropLevelRegiond:
 
     def __call__(self, data: Mapping[Hashable, np.ndarray]) -> Dict[Hashable, np.ndarray]:
         d = dict(data)
-        d['label_key'] = d['label_key'][self.level-1]
-        label: int = d['label_key']  # z slice number
+        d['label_in_img_key'] = d['label_in_img_key'][self.level-1]
+        label: int = d['label_in_img_key']  # z slice number
         lower: int = max(0, label - self.height)
         if self.rand_start:
             start = random.randint(lower, label)  # between lower and label
@@ -704,8 +702,8 @@ class CropLevelRegiond:
             start = end - self.height
         d['image_key'] = d['image_key'][start: end].astype(np.float32)
 
-        d['label_key'] = d['label_key'] - start
-        d['label_key'] = np.array(d['label_key']).reshape(-1, ).astype(np.float32)
+        d['label_in_patch_key'] = d['label_in_img_key'] - start
+        d['label_in_patch_key'] = np.array(d['label_in_patch_key']).reshape(-1, ).astype(np.float32)
 
         d['world_key'] = d['world_key'][self.level-1]
         d['world_key'] = np.array(d['world_key']).reshape(-1, ).astype(np.float32)
@@ -714,7 +712,7 @@ class CropLevelRegiond:
 
 
 class ComposePosd:
-    """My Commpose to handlllllllle with img and label at the same time.
+    """My Commpose to handle with img and label at the same time.
 
     """
 
@@ -875,7 +873,7 @@ def start_run(mode, net, dataloader, epochs, loss_fun, loss_fun_mae, opt, scaler
         t_load_data.append(t1 - t0)
 
         batch_x = data['image_key'].to(device)
-        batch_y = data['label_key'].to(device)
+        batch_y = data['label_in_patch_key'].to(device)
         sp_z = data['space_key'][:, 0].reshape(-1, 1).to(device)
 
 
@@ -1137,7 +1135,8 @@ def all_loader(mypath, data_dir, label_file, kfold_seed=49):
     # vdaug_dataset = DatasetPos(vd_data[:5], xform=get_xformd('train', level=args.fine_level))
     # vd_dataset =DatasetPos(vd_data[:5], xform=get_xformd('valid', level=args.fine_level))
     if args.if_test:
-        ts_dataset =DatasetPos(ts_data[:5], xform=get_xformd('test', level=args.fine_level))
+        ts_dataset =monai.data.PersistentDataset(data=ts_data, transform=get_xformd('test', level=args.fine_level),
+                                         cache_dir="persistent_cache")
     else:
         ts_dataset = None
     tr_dataset = monai.data.SmartCacheDataset(data=tr_data, transform=get_xformd('train', level=args.fine_level),
@@ -1231,8 +1230,9 @@ def train(id: int):
     dataloader_dict = {'train': train_dataloader, 'valid': valid_dataloader,
                        'test': test_dataloader, 'validaug': validaug_dataloader}
     record_best_preds(net, dataloader_dict, mypath)
-    compute_metrics(mypath)
-
+    if not args.fine_level:
+        compute_metrics(mypath)
+    print('Finish all things!')
 
 def SlidingLoader(fpath, world_pos, z_size, stride=1, batch_size=1):
     print(f'start load {fpath} for sliding window inference')
@@ -1240,11 +1240,11 @@ def SlidingLoader(fpath, world_pos, z_size, stride=1, batch_size=1):
     data = trans(data={'fpath': fpath, 'world_pos':world_pos})
 
     raw_x = data['image_key']
-    label = data['label_key']
+    label = data['label_in_img_key']
 
     assert raw_x.shape[0] > z_size
     start_lower: int = label[args.level_fine-1] - z_size
-    start_higher: int = label[args.level_fine-1] + z_size,
+    start_higher: int = label[args.level_fine-1] + z_size
     start_lower = max(0, start_lower)
     start_higher = min(raw_x.shape[0], start_higher)
 
@@ -1262,7 +1262,7 @@ def SlidingLoader(fpath, world_pos, z_size, stride=1, batch_size=1):
             print(f'start: {start}, i: {i}')
             crop = CropLevelRegiond(level=args.level_fine, rand_start= False, start = start)
             new_data = crop(data)
-            new_patch, new_label = new_data['image_key'], new_data['label_key']
+            new_patch, new_label = new_data['image_key'], new_data['label_in_patch_key']
             # patch: np.ndarray = raw_x[start:start + z_size]  # z, y, z
             # patch = patch.astype(np.float32)
             # new_label: torch.Tensor = label - start
@@ -1299,7 +1299,7 @@ class Evaluater():
             for idx in range(len(batch_data['image_key'])):
                 sliding_loader = SlidingLoader(batch_data['fpath_key'][idx], batch_data['world_pos'][idx],
                                                z_size=args.z_size, stride=args.infer_stride, batch_size=args.batch_size)
-                pred_ls = []
+                pred_in_img_ls = []
                 pred_in_patch_ls = []
                 label_in_patch_ls = []
                 for patch, new_label, start in sliding_loader:
@@ -1317,48 +1317,49 @@ class Evaluater():
                         with torch.no_grad():
                             pred = self.net(batch_x)
 
-                    pred = pred.cpu().detach().numpy()
-                    pred_in_patch = pred
+                    # pred = pred.cpu().detach().numpy()
+                    pred_in_patch = pred.cpu().detach().numpy()
                     pred_in_patch_ls.append(pred_in_patch)
+
                     start_np = start.numpy().reshape((-1, 1))
-                    pred = pred_in_patch + start_np  # re organize it to original coordinate
-                    pred_ls.append(pred)
+                    pred_in_img = pred_in_patch + start_np  # re organize it to original coordinate
+                    pred_in_img_ls.append(pred_in_img)
+
                     new_label_ = new_label + start_np
                     label_in_patch_ls.append(new_label_)
 
-                pred_all = np.concatenate(pred_ls, axis=0)
+                pred_in_img_all = np.concatenate(pred_in_img_ls, axis=0)
                 pred_in_patch_all = np.concatenate(pred_in_patch_ls, axis=0)
                 label_in_patch_all = np.concatenate(label_in_patch_ls, axis=0)
 
-                batch_label: np.ndarray = batch_data['label_key'][idx].cpu().detach().numpy().astype('Int64')
-                batch_preds_ave: np.ndarray = np.mean(pred_all, 0)
-
+                batch_label: np.ndarray = batch_data['label_in_img_key'][idx].cpu().detach().numpy().astype('Int64')
+                batch_preds_ave: np.ndarray = np.mean(pred_in_img_all, 0)
                 batch_preds_int: np.ndarray = batch_preds_ave.astype('Int64')
-
                 batch_preds_world: np.ndarray = batch_preds_ave * batch_data['space_key'][idx][0].item() + \
                                                 batch_data['origin_key'][idx][0].item()
-
                 batch_world: np.ndarray = batch_data['world_key'][idx].cpu().detach().numpy()
                 head = ['L1', 'L2', 'L3', 'L4', 'L5']
+                if args.level_fine:
+                    head = [head[args.level_fine-1]]
                 if idx < 5:
                     futil.appendrows_to(self.mypath.pred(self.mode).split('.csv')[0] + '_' + str(idx) + '.csv',
-                                        pred_all, head=head)
+                                        pred_in_img_all, head=head)
                     futil.appendrows_to(self.mypath.pred(self.mode).split('.csv')[0] + '_' + str(idx) + '_in_patch.csv',
                                         pred_in_patch_all, head=head)
                     futil.appendrows_to(
                         self.mypath.label(self.mode).split('.csv')[0] + '_' + str(idx) + '_in_patch.csv',
                         label_in_patch_all, head=head)
 
-                    pred_all_world = pred_all * batch_data['space_key'][idx][0].item() + \
+                    pred_all_world = pred_in_img_all * batch_data['space_key'][idx][0].item() + \
                                      batch_data['origin_key'][idx][0].item()
                     futil.appendrows_to(self.mypath.pred(self.mode).split('.csv')[0] + '_' + str(idx) + '_world.csv',
                                         pred_all_world, head=head)
 
-                futil.appendrows_to(self.mypath.label(self.mode), batch_label, head=head)
-                futil.appendrows_to(self.mypath.pred(self.mode), batch_preds_ave, head=head)
+                futil.appendrows_to(self.mypath.label(self.mode), batch_label, head=head)  # label in image
+                futil.appendrows_to(self.mypath.pred(self.mode), batch_preds_ave, head=head)  # pred in image
                 futil.appendrows_to(self.mypath.pred_int(self.mode), batch_preds_int, head=head)
-                futil.appendrows_to(self.mypath.pred_world(self.mode), batch_preds_world, head=head)
-                futil.appendrows_to(self.mypath.world(self.mode), batch_world, head=head)
+                futil.appendrows_to(self.mypath.pred_world(self.mode), batch_preds_world, head=head)  # pred in world
+                futil.appendrows_to(self.mypath.world(self.mode), batch_world, head=head)  #33 label in world
 
 
 def record_best_preds(net: torch.nn.Module, dataloader_dict: Dict[str, DataLoader], mypath: Path):
