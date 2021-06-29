@@ -490,7 +490,7 @@ class DatasetPos(Dataset):
 #                 'origin_key': self.ori[idx],
 #                 'fpath_key': self.data_x_names[idx]}
 #
-#         check_aug_effect = 0
+#         check_aug_effect = 0s
 #         if check_aug_effect:
 #             def crop_center(img, cropx, cropy):
 #                 y, x = img.shape
@@ -525,8 +525,8 @@ class LoadDatad:
         self.normalize0to1 = ScaleIntensityRange(a_min=-1500.0, a_max=1500.0, b_min=0.0, b_max=1.0, clip=True)
 
     def __call__(self, data: Dict) -> Dict[Hashable, np.ndarray]:
-        fpath = data['fpath']
-        world_pos = data['world_pos']
+        fpath = data['fpath_key']
+        world_pos = np.array(data['world_key'])
         data_x = futil.load_itk(fpath, require_ori_sp=True)
         x = data_x[0]  # shape order: z, y, x
         print("cliping ... ")
@@ -690,13 +690,13 @@ class CropLevelRegiond:
         if self.rand_start:
             start = random.randint(lower, label)  # between lower and label
         else:
-            start = self.start
+            start = int(self.start)
             if start < lower:
                 raise Exception(f"start position {start} is lower than the lower line {lower}")
             if start > label:
                 raise Exception(f"start position {start} is higher than the label line {label}")
 
-        end = start + self.height
+        end = int(start + self.height)
         if end > d['image_key'].shape[0]:
             end = d['image_key'].shape[0]
             start = end - self.height
@@ -852,7 +852,7 @@ def get_dir_pats(data_dir: str, label_file: str) -> List:
     return dir_pats
 
 
-def start_run(mode, net, dataloader, epochs, loss_fun, loss_fun_mae, opt, scaler, mypath, epoch_idx,
+def start_run(mode, net, dataloader, loss_fun, loss_fun_mae, opt, mypath, epoch_idx,
               valid_mae_best=None):
     print(mode + "ing ......")
     loss_path = mypath.loss(mode)
@@ -1127,9 +1127,9 @@ def all_loader(mypath, data_dir, label_file, kfold_seed=49):
     log_dict['tr_pat_nb'] = len(tr_x)
     log_dict['vd_pat_nb'] = len(vd_x)
     log_dict['ts_pat_nb'] = len(ts_x)
-    tr_data = [{'fpath': x, 'world_pos': y} for x, y in zip(tr_x, tr_y)]
-    vd_data = [{'fpath': x, 'world_pos': y} for x, y in zip(vd_x, vd_y)]
-    ts_data = [{'fpath': x, 'world_pos': y} for x, y in zip(ts_x, ts_y)]
+    tr_data = [{'fpath_key': x, 'world_key': y} for x, y in zip(tr_x, tr_y)]
+    vd_data = [{'fpath_key': x, 'world_key': y} for x, y in zip(vd_x, vd_y)]
+    ts_data = [{'fpath_key': x, 'world_key': y} for x, y in zip(ts_x, ts_y)]
 
     # tr_dataset = DatasetPos(tr_data, xform=get_xformd('train', level=args.fine_level))
     # vdaug_dataset = DatasetPos(vd_data[:5], xform=get_xformd('train', level=args.fine_level))
@@ -1213,22 +1213,20 @@ def train(id: int):
     lr = 1e-4
     log_dict['lr'] = lr
     opt = torch.optim.Adam(net.parameters(), lr=lr, weight_decay=args.weight_decay)
-    scaler = torch.cuda.amp.GradScaler() if amp else None
     epochs = 0 if args.mode == 'infer' else args.epochs
     for i in range(epochs):  # 20000 epochs
         if args.mode in ['train', 'continue_train']:
-            start_run('train', net, train_dataloader, epochs, loss_fun, loss_fun_mae, opt, scaler, mypath,
-                      i)
+            start_run('train', net, train_dataloader, loss_fun, loss_fun_mae, opt, mypath, i)
         if i % args.valid_period==0:
             # run the validation
-            valid_mae_best = start_run('valid', net, valid_dataloader, epochs, loss_fun, loss_fun_mae, opt,
-                                       scaler, mypath, i, valid_mae_best)
-            start_run('validaug', net, validaug_dataloader, epochs, loss_fun, loss_fun_mae, opt, scaler, mypath, i)
+            valid_mae_best = start_run('valid', net, valid_dataloader, loss_fun, loss_fun_mae, opt, mypath, i, valid_mae_best)
+            start_run('validaug', net, validaug_dataloader, loss_fun, loss_fun_mae, opt, mypath, i)
             if args.if_test:
-                start_run('test', net, test_dataloader, epochs, loss_fun, loss_fun_mae, opt, scaler, mypath, i)
+                start_run('test', net, test_dataloader, loss_fun, loss_fun_mae, opt, mypath, i)
 
-    dataloader_dict = {'train': train_dataloader, 'valid': valid_dataloader,
-                       'test': test_dataloader, 'validaug': validaug_dataloader}
+    dataloader_dict = {'train': train_dataloader, 'valid': valid_dataloader, 'validaug': validaug_dataloader}
+    if args.if_test:
+        dataloader_dict.update({'test': test_dataloader})
     record_best_preds(net, dataloader_dict, mypath)
     if not args.fine_level:
         compute_metrics(mypath)
@@ -1237,14 +1235,14 @@ def train(id: int):
 def SlidingLoader(fpath, world_pos, z_size, stride=1, batch_size=1):
     print(f'start load {fpath} for sliding window inference')
     trans = ComposePosd([LoadDatad(), MyNormalizeImagePosd()])
-    data = trans(data={'fpath': fpath, 'world_pos':world_pos})
+    data = trans(data={'fpath_key': fpath, 'world_key':world_pos})
 
     raw_x = data['image_key']
     label = data['label_in_img_key']
 
     assert raw_x.shape[0] > z_size
-    start_lower: int = label[args.level_fine-1] - z_size
-    start_higher: int = label[args.level_fine-1] + z_size
+    start_lower: int = label - z_size
+    start_higher: int = label + z_size
     start_lower = max(0, start_lower)
     start_higher = min(raw_x.shape[0], start_higher)
 
@@ -1257,10 +1255,10 @@ def SlidingLoader(fpath, world_pos, z_size, stride=1, batch_size=1):
     i = 0
 
     start = start_lower
-    while start < start_higher:
+    while start < label:
         if i < batch_size:
             print(f'start: {start}, i: {i}')
-            crop = CropLevelRegiond(level=args.level_fine, rand_start= False, start = start)
+            crop = CropLevelRegiond(level=args.fine_level, rand_start= False, start = start)
             new_data = crop(data)
             new_patch, new_label = new_data['image_key'], new_data['label_in_patch_key']
             # patch: np.ndarray = raw_x[start:start + z_size]  # z, y, z
@@ -1297,7 +1295,7 @@ class Evaluater():
     def run(self):
         for batch_data in self.dataloader:
             for idx in range(len(batch_data['image_key'])):
-                sliding_loader = SlidingLoader(batch_data['fpath_key'][idx], batch_data['world_pos'][idx],
+                sliding_loader = SlidingLoader(batch_data['fpath_key'][idx], batch_data['world_key'][idx],
                                                z_size=args.z_size, stride=args.infer_stride, batch_size=args.batch_size)
                 pred_in_img_ls = []
                 pred_in_patch_ls = []
@@ -1339,8 +1337,8 @@ class Evaluater():
                                                 batch_data['origin_key'][idx][0].item()
                 batch_world: np.ndarray = batch_data['world_key'][idx].cpu().detach().numpy()
                 head = ['L1', 'L2', 'L3', 'L4', 'L5']
-                if args.level_fine:
-                    head = [head[args.level_fine-1]]
+                if args.fine_level:
+                    head = [head[args.fine_level-1]]
                 if idx < 5:
                     futil.appendrows_to(self.mypath.pred(self.mode).split('.csv')[0] + '_' + str(idx) + '.csv',
                                         pred_in_img_all, head=head)
@@ -1355,6 +1353,12 @@ class Evaluater():
                     futil.appendrows_to(self.mypath.pred(self.mode).split('.csv')[0] + '_' + str(idx) + '_world.csv',
                                         pred_all_world, head=head)
 
+                if args.fine_level:
+                    batch_label = np.array(batch_label).reshape(-1,)
+                    batch_preds_ave = np.array(batch_preds_ave).reshape(-1,)
+                    batch_preds_int= np.array(batch_preds_int).reshape(-1,)
+                    batch_preds_world = np.array(batch_preds_world).reshape(-1,)
+                    batch_world = np.array(batch_world).reshape(-1,)
                 futil.appendrows_to(self.mypath.label(self.mode), batch_label, head=head)  # label in image
                 futil.appendrows_to(self.mypath.pred(self.mode), batch_preds_ave, head=head)  # pred in image
                 futil.appendrows_to(self.mypath.pred_int(self.mode), batch_preds_int, head=head)
@@ -1366,11 +1370,11 @@ def record_best_preds(net: torch.nn.Module, dataloader_dict: Dict[str, DataLoade
     net.load_state_dict(torch.load(mypath.model_fpath, map_location=device))  # load the best weights to do evaluation
     net.eval()
     for mode, dataloader in dataloader_dict.items():
-        try:
-            evaluater = Evaluater(net, dataloader, mode, mypath)
-            evaluater.run()
-        except:
-            continue
+
+        evaluater = Evaluater(net, dataloader, mode, mypath)
+        evaluater.run()
+        # except:
+        #     continue
 
 
 def record_preds(mode, batch_y, pred, mypath, data):
@@ -1450,7 +1454,10 @@ def record_1st(record_file, current_id):
 
 
 def add_best_metrics(df: pd.DataFrame, mypath: Path, index: int) -> pd.DataFrame:
-    for mode in ['train', 'validaug', 'valid', 'test']:
+    modes = ['train', 'validaug', 'valid']
+    if args.if_test:
+        modes.append('test')
+    for mode in modes:
         lock2 = FileLock(mypath.loss(mode) + ".lock")
         # when evaluating/inference old models, those files would be copied to new the folder
         with lock2:
@@ -1554,9 +1561,11 @@ if __name__ == "__main__":
     if torch.cuda.is_available():  # set device and amp
         device = torch.device("cuda")
         amp = True
+        scaler = torch.cuda.amp.GradScaler()
     else:
         device = torch.device("cpu")
         amp = False
+        scaler = None
     log_dict['amp'] = amp
 
     record_file: str = 'records_pos.csv'

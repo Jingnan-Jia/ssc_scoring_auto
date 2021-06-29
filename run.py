@@ -1880,22 +1880,18 @@ def sampler_by_disext(tr_y, sys_ratio=0.8):
 
 
 def get_loss(args):
-    if args.r_c == "c":
-        loss_fun = nn.CrossEntropyLoss()  # for classification task
-        log_dict['loss_fun'] = 'CE'
+    if args.loss == 'mae':
+        loss_fun = nn.L1Loss()
+    elif args.loss == 'smooth_mae':
+        loss_fun = nn.SmoothL1Loss()
+    elif args.loss == 'mse':
+        loss_fun = nn.MSELoss()
+    elif args.loss == 'mse+mae':
+        loss_fun = nn.MSELoss() + nn.L1Loss()  # for regression task
+    elif args.loss == 'msehigher':
+        loss_fun = MSEHigher()
     else:
-        if args.loss == 'mae':
-            loss_fun = nn.L1Loss()
-        elif args.loss == 'smooth_mae':
-            loss_fun = nn.SmoothL1Loss()
-        elif args.loss == 'mse':
-            loss_fun = nn.MSELoss()
-        elif args.loss == 'mse+mae':
-            loss_fun = nn.MSELoss() + nn.L1Loss()  # for regression task
-        elif args.loss == 'msehigher':
-            loss_fun = MSEHigher()
-        else:
-            raise Exception("loss function is not correct ", args.loss)
+        raise Exception("loss function is not correct ", args.loss)
     return loss_fun
 
 
