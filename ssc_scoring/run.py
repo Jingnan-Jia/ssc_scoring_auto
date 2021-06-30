@@ -1878,19 +1878,24 @@ def sampler_by_disext(tr_y, sys_ratio=0.8):
     return sampler
 
 
-def get_loss(args):
-    if args.loss == 'mae':
+def get_loss(loss: str) -> nn.Module:
+    """
+    Get the loss function according the name of the loss.
+    :param loss: name of loss
+    :return: loss instance
+    """
+    if loss == 'mae':
         loss_fun = nn.L1Loss()
-    elif args.loss == 'smooth_mae':
+    elif loss == 'smooth_mae':
         loss_fun = nn.SmoothL1Loss()
-    elif args.loss == 'mse':
+    elif loss == 'mse':
         loss_fun = nn.MSELoss()
-    elif args.loss == 'mse+mae':
+    elif loss == 'mse+mae':
         loss_fun = nn.MSELoss() + nn.L1Loss()  # for regression task
-    elif args.loss == 'msehigher':
+    elif loss == 'msehigher':
         loss_fun = MSEHigher()
     else:
-        raise Exception("loss function is not correct ", args.loss)
+        raise Exception("loss function is not correct ", loss)
     return loss_fun
 
 
@@ -1911,7 +1916,7 @@ def train(id_: int):
 
         data_dir: str = "dataset/SSc_DeepLearning"
         label_file: str = "dataset/SSc_DeepLearning/GohScores.xlsx"
-        from run_pos import prepare_data as prepare_data_3D
+        from ssc_scoring.run_pos import prepare_data as prepare_data_3D
         tr_x, tr_y, vd_x, vd_y, ts_x, ts_y = prepare_data_3D(mypath, data_dir, label_file,
                                                              kfold_seed=49, ts_level_nb=args.ts_level_nb,
                                                              fold=args.fold, total_folds = args.total_folds)
@@ -1973,7 +1978,7 @@ def train(id_: int):
     net = net.to(device)
     print('move net t device')
 
-    loss_fun = get_loss(args)
+    loss_fun = get_loss(loss=args.loss)
     loss_fun_mae = nn.L1Loss()
     lr = 1e-4
     log_dict['lr'] = lr
@@ -2218,7 +2223,13 @@ def record_experiment(record_file: str, current_id: Optional[int] = None):
             df_lastrow.to_csv(mypath.id_dir + '/' + record_file, index=False)  # save the record of the current ex
 
 
-def time_diff(t1: datetime.datetime, t2: datetime.datetime):
+def time_diff(t1: datetime.datetime, t2: datetime.datetime) -> str:
+    """
+    Get the elapsed time. testing: yes
+    :param t1: time 1
+    :param t2: time 2
+    :return: elapsed time from time1 to time2
+    """
     # t1_date = datetime.datetime(t1.year, t1.month, t1.day, t1.hour, t1.minute, t1.second)
     # t2_date = datetime.datetime(t2.year, t2.month, t2.day, t2.hour, t2.minute, t2.second)
     t_elapsed = t2 - t1
