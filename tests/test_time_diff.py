@@ -2,13 +2,11 @@
 # @Time    : 6/27/21 1:34 PM
 # @Author  : Jingnan
 # @Email   : jiajingnan2222@gmail.com
-print('package', __package__)
-print('----')
+
 import unittest
 from parameterized import parameterized
 import datetime
-if __package__:
-    from ssc_scoring.run import time_diff
+from ssc_scoring.run import time_diff
 
 TEST_CASE_1 = ['1:02:34']
 
@@ -24,5 +22,4 @@ class TestTimeDiff(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    print('package name: :', __package__)
     unittest.main()

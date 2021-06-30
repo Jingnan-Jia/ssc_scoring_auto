@@ -33,6 +33,9 @@ function print_usage {
 }
 
 
+doCoverage=false
+doUnitTests=false
+
 if [ -z "$1" ]
 then
     print_error_msg "Too few arguments to $0"
